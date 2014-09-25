@@ -1,0 +1,5 @@
+python-muranoclient (0.5.5-1) experimental; urgency=low
+
+  * Initial release (Closes: #762787).
+
+ -- Thomas Goirand <zigo@debian.org>  Thu, 25 Sep 2014 15:50:43 +0800

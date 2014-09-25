@@ -1,0 +1,78 @@
+Source: python-muranoclient
+Section: python
+Priority: extra
+Maintainer: PKG OpenStack <openstack-devel@lists.alioth.debian.org>
+Uploaders: Julien Danjou <acid@debian.org>,
+           Thomas Goirand <zigo@debian.org>,
+           Ghe Rivero <ghe.rivero@stackops.com>,
+           Mehdi Abaakouk <sileht@sileht.net>,
+           Gonéri Le Bouder <goneri@debian.org>
+Build-Depends: debhelper (>= 9),
+               openstack-pkg-tools,
+               python-all (>= 2.6.6-3~),
+               python-pbr (>= 0.6),
+               python-sphinx (>= 1.1.2)
+Build-Depends-Indep: python-babel (>= 1.3),
+                     python-coverage (>= 3.6),
+                     python-fixtures (>= 0.3.14),
+                     python-hacking,
+                     python-httplib2 (>= 0.7.5),
+                     python-iso8601 (>= 0.1.9),
+                     python-keystoneclient (>= 1:0.9.0),
+                     python-mock (>= 1.0),
+                     python-openssl,
+                     python-prettytable (>= 0.7),
+                     python-requests (>= 1.1),
+                     python-six (>= 1.7.0),
+                     python-testscenarios (>= 0.4),
+                     python-testtools (>= 0.9.34),
+                     python-yaml,
+                     python-yaql,
+                     subunit (>= 0.0.18),
+                     testrepository (>= 0.0.18)
+Standards-Version: 3.9.5
+Vcs-Browser: http://anonscm.debian.org/gitweb/?p=openstack/python-muranoclient.git;a=summary
+Vcs-Git: git://anonscm.debian.org/openstack/python-muranoclient.git
+Homepage: https://github.com/openstack/python-muranoclient
+
+Package: python-muranoclient
+Architecture: all
+Pre-Depends: dpkg (>= 1.15.6~)
+Depends: python-babel (>= 1.3),
+         python-httplib2 (>= 0.7.5),
+         python-iso8601 (>= 0.1.9),
+         python-keystoneclient (>= 1:0.9.0),
+         python-openssl,
+         python-pbr (>= 0.6),
+         python-prettytable (>= 0.7),
+         python-requests (>= 1.1),
+         python-six (>= 1.7.0),
+         python-yaml,
+         python-yaql,
+         ${misc:Depends},
+         ${python:Depends}
+Description: cloud-ready application catalog - Python 2.x client module
+ Murano Project introduces an application catalog, which allows application
+ developers and cloud administrators to publish various cloud-ready
+ applications in a browsable categorised catalog, which may be used by the
+ cloud users (including the inexperienced ones) to pick-up the needed
+ applications and services and composes the reliable environments out of them
+ in a "push-the-button" manner.
+ .
+ This is a client for Murano. There's a Python API (the "muranoclient"
+ module), and a command-line script ("murano").
+
+Package: python-muranoclient-doc
+Architecture: all
+Section: doc
+Pre-Depends: dpkg (>= 1.15.6~)
+Depends: ${misc:Depends}, ${sphinxdoc:Depends}
+Description: cloud-ready application catalog - client doc
+ Murano Project introduces an application catalog, which allows application
+ developers and cloud administrators to publish various cloud-ready
+ applications in a browsable categorised catalog, which may be used by the
+ cloud users (including the inexperienced ones) to pick-up the needed
+ applications and services and composes the reliable environments out of them
+ in a "push-the-button" manner.
+ .
+ This package contains the documentation for the client.

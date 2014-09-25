@@ -1,0 +1,9 @@
+Document: python-muranoclient-doc
+Title: Murano Client Documentation
+Author: OpenStack
+Abstract: Sphinx documentation for Murano Client
+Section: Programming/Python
+
+Format: HTML
+Index: /usr/share/doc/python-muranoclient-doc/html/index.html
+Files: /usr/share/doc/python-muranoclient-doc/html/*
