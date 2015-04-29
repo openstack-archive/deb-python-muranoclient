@@ -14,14 +14,17 @@
 
 import os
 import re
+import StringIO
 import sys
 import tempfile
 
 import fixtures
 import mock
+import requests
 import six
 from testtools import matchers
 
+from muranoclient.common import utils
 from muranoclient.openstack.common.apiclient import exceptions
 import muranoclient.shell
 from muranoclient.tests import base
@@ -43,7 +46,9 @@ FAKE_ENV2 = {'OS_USERNAME': 'username',
 
 
 class TestArgs(object):
-    pass
+    version = ''
+    murano_repo_url = ''
+    exists_action = ''
 
 
 class ShellTest(base.TestCaseShell):
@@ -188,44 +193,75 @@ class ShellTest(base.TestCaseShell):
         self.client.packages.get.return_value = mock_package
         self.make_env()
         self.shell('package-show 1234')
-        self.client.packages.get.assert_called_once_with('1234')
+        self.client.packages.get.assert_called_with('1234')
 
     @mock.patch('muranoclient.v1.packages.PackageManager')
     def test_package_delete(self, mock_package_manager):
         self.client.packages = mock_package_manager()
         self.make_env()
         self.shell('package-delete 1234')
-        self.client.packages.delete.assert_called_once_with('1234')
+        self.client.packages.delete.assert_called_with('1234')
 
     @mock.patch('muranoclient.v1.environments.EnvironmentManager')
     def test_environment_delete(self, mock_manager):
         self.client.environments = mock_manager()
         self.make_env()
         self.shell('environment-delete env1 env2')
-        self.client.environments.delete.assert_has_calls([
-            mock.call('env1'), mock.call('env2')])
+        self.client.environments.find.assert_has_calls([
+            mock.call(name='env1'), mock.call(name='env2')])
+        self.client.environments.delete.assert_called_twice()
 
     @mock.patch('muranoclient.v1.environments.EnvironmentManager')
     def test_environment_rename(self, mock_manager):
         self.client.environments = mock_manager()
         self.make_env()
-        self.shell('environment-rename env-id new-name')
-        self.client.environments.update.assert_called_once_with(
-            'env-id', 'new-name')
+        self.shell('environment-rename old-name-or-id new-name')
+        self.client.environments.find.assert_called_once_with(
+            name='old-name-or-id')
+        self.client.environments.update.assert_called_once()
 
     @mock.patch('muranoclient.v1.environments.EnvironmentManager')
     def test_environment_show(self, mock_manager):
         self.client.environments = mock_manager()
         self.make_env()
-        self.shell('environment-show env-id')
-        self.client.environments.get.assert_called_once_with('env-id')
+        self.shell('environment-show env-id-or-name')
+        self.client.environments.find.assert_called_once_with(
+            name='env-id-or-name')
+        self.client.environments.get.assert_called_once()
 
-    @mock.patch('muranoclient.v1.deployments.DeploymentManager')
-    def test_deployments_show(self, mock_manager):
-        self.client.deployments = mock_manager()
+    @mock.patch('muranoclient.v1.templates.EnvTemplateManager')
+    def test_env_template_delete(self, mock_manager):
+        self.client.env_templates = mock_manager()
         self.make_env()
-        self.shell('deployment-list env-id')
-        self.client.deployments.list.assert_called_once_with('env-id')
+        self.shell('env-template-delete env1 env2')
+        self.client.env_templates.delete.assert_has_calls([
+            mock.call('env1'), mock.call('env2')])
+
+    @mock.patch('muranoclient.v1.templates.EnvTemplateManager')
+    def test_env_template_create(self, mock_manager):
+        self.client.env_templates = mock_manager()
+        self.make_env()
+        self.shell('env-template-create env-name')
+        self.client.env_templates.create.assert_called_once_with(
+            {'name': 'env-name'})
+
+    @mock.patch('muranoclient.v1.templates.EnvTemplateManager')
+    def test_env_template_show(self, mock_manager):
+        self.client.env_templates = mock_manager()
+        self.make_env()
+        self.shell('env-template-show env-id')
+        self.client.env_templates.get.assert_called_once_with('env-id')
+
+    @mock.patch('muranoclient.v1.environments.EnvironmentManager')
+    @mock.patch('muranoclient.v1.deployments.DeploymentManager')
+    def test_deployments_show(self, mock_deployment_manager, mock_env_manager):
+        self.client.deployments = mock_deployment_manager()
+        self.client.environments = mock_env_manager()
+        self.make_env()
+        self.shell('deployment-list env-id-or-name')
+        self.client.environments.find.assert_called_once_with(
+            name='env-id-or-name')
+        self.client.deployments.list.assert_called_once()
 
 
 class ShellPackagesOperations(ShellTest):
@@ -263,39 +299,118 @@ class ShellPackagesOperations(ShellTest):
                                   "Application package "
                                   "is available at {0}".format(RESULT_PACKAGE))
 
-    def test_package_import(self):
+    @mock.patch('muranoclient.common.utils.Package.images')
+    def test_package_import(self, mock_images):
+        mock_images.return_value = []
         args = TestArgs()
         with tempfile.NamedTemporaryFile() as f:
             RESULT_PACKAGE = f.name
             args.filename = RESULT_PACKAGE
             args.categories = ['Cat1', 'Cat2 with space']
+            args.is_public = True
 
-            v1_shell.do_package_import(self.client, args)
+            result = {RESULT_PACKAGE: utils.Package.from_file(
+                StringIO.StringIO("123"))}
+            with mock.patch(
+                    'muranoclient.common.utils.Package.manifest') as man_mock:
+                man_mock.__getitem__.side_effect = [args.filename]
+                with mock.patch(
+                        'muranoclient.common.utils.Package.requirements',
+                        mock.Mock(side_effect=lambda *args, **kw: result)):
+                    v1_shell.do_package_import(self.client, args)
 
             self.client.packages.create.assert_called_once_with(
-                {'categories': ['Cat1', 'Cat2 with space']},
-                ((RESULT_PACKAGE, mock.ANY),)
+                {'categories': ['Cat1', 'Cat2 with space'], 'is_public': True},
+                {RESULT_PACKAGE: mock.ANY},
             )
 
-    def test_package_import_no_categories(self):
+    @mock.patch('muranoclient.common.utils.Package.images')
+    def test_package_import_no_categories(self, mock_images):
+        mock_images.return_value = []
         args = TestArgs()
         with tempfile.NamedTemporaryFile() as f:
             RESULT_PACKAGE = f.name
 
             args.filename = RESULT_PACKAGE
             args.categories = None
+            args.is_public = False
 
-            v1_shell.do_package_import(self.client, args)
+            result = {RESULT_PACKAGE: utils.Package.from_file(
+                StringIO.StringIO("123"))}
+
+            with mock.patch(
+                    'muranoclient.common.utils.Package.manifest') as man_mock:
+                man_mock.__getitem__.side_effect = [args.filename]
+                with mock.patch(
+                        'muranoclient.common.utils.Package.requirements',
+                        mock.Mock(side_effect=lambda *args, **kw: result)):
+                    v1_shell.do_package_import(self.client, args)
 
             self.client.packages.create.assert_called_once_with(
-                None,
-                ((RESULT_PACKAGE, mock.ANY),)
+                {'is_public': False},
+                {RESULT_PACKAGE: mock.ANY},
             )
 
-    def test_package_import_wrong_file(self):
+    @mock.patch('muranoclient.common.utils.Package.images')
+    def test_package_import_url(self, mock_images):
+        mock_images.return_value = []
         args = TestArgs()
-        args.filename = '/home/this/path/does/not/exist'
-        args.categories = None
 
-        self.assertRaises(IOError,
-                          v1_shell.do_package_import, self.client, args)
+        args.filename = "http://127.0.0.1/test_package.zip"
+        args.categories = None
+        args.is_public = False
+
+        resp = requests.Response()
+        resp.status_code = 200
+        resp.raw = StringIO.StringIO("123")
+        result = {args.filename: utils.Package.from_file(
+            StringIO.StringIO("123"))}
+        with mock.patch(
+                'muranoclient.common.utils.Package.manifest') as man_mock:
+            man_mock.__getitem__.side_effect = [args.filename]
+            with mock.patch(
+                    'requests.get',
+                    mock.Mock(side_effect=lambda k, *args, **kw: resp)):
+                with mock.patch(
+                        'muranoclient.common.utils.Package.requirements',
+                        mock.Mock(side_effect=lambda *args, **kw: result)):
+
+                    v1_shell.do_package_import(self.client, args)
+
+        self.client.packages.create.assert_called_once_with(
+            {'is_public': False},
+            {args.filename: mock.ANY},
+        )
+
+    @mock.patch('muranoclient.common.utils.Package.images')
+    def test_package_import_by_name(self, mock_images):
+        mock_images.return_value = []
+        args = TestArgs()
+
+        args.filename = "io.test.apps.test_application"
+        args.categories = None
+        args.is_public = False
+        args.murano_repo_url = "http://127.0.0.1"
+
+        resp = requests.Response()
+        resp.status_code = 200
+        resp.raw = StringIO.StringIO("123")
+        result = {args.filename: utils.Package.from_file(
+            StringIO.StringIO("123"))}
+        with mock.patch(
+                'muranoclient.common.utils.Package.manifest') as man_mock:
+            man_mock.__getitem__.side_effect = [args.filename]
+            with mock.patch(
+                    'requests.get',
+                    mock.Mock(side_effect=lambda k, *args, **kw: resp)):
+                with mock.patch(
+                        'muranoclient.common.utils.Package.requirements',
+                        mock.Mock(side_effect=lambda *args, **kw: result)):
+
+                        v1_shell.do_package_import(self.client, args)
+
+        self.assertTrue(self.client.packages.create.called)
+        self.client.packages.create.assert_called_once_with(
+            {'is_public': False},
+            {args.filename: mock.ANY},
+        )

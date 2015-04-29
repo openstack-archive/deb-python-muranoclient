@@ -22,13 +22,14 @@ import argparse
 import logging
 import sys
 
+import glanceclient
 from keystoneclient.v2_0 import client as ksclient
+from oslo.utils import encodeutils
 import six
 
 from muranoclient import client as apiclient
 from muranoclient.common import utils
 from muranoclient.openstack.common.apiclient import exceptions as exc
-from muranoclient.openstack.common import strutils
 
 
 logger = logging.getLogger(__name__)
@@ -135,6 +136,10 @@ class MuranoShell(object):
                             default=utils.env('MURANO_URL'),
                             help='Defaults to env[MURANO_URL]')
 
+        parser.add_argument('--glance-url',
+                            default=utils.env('GLANCE_URL'),
+                            help='Defaults to env[GLANCE_URL]')
+
         parser.add_argument('--murano-api-version',
                             default=utils.env(
                                 'MURANO_API_VERSION', default='1'),
@@ -153,6 +158,12 @@ class MuranoShell(object):
                             default=bool(utils.env('MURANO_INCLUDE_PASSWORD')),
                             action='store_true',
                             help='Send os-username and os-password to murano.')
+
+        parser.add_argument('--murano-repo-url',
+                            default=utils.env('MURANO_REPO_URL',
+                                              default='http://127.0.0.1'),
+                            help=('Defaults to env[MURANO_REPO_URL] '
+                                  'or 127.0.0.1'))
 
         return parser
 
@@ -314,8 +325,11 @@ class MuranoShell(object):
             'cacert': args.os_cacert,
             'include_pass': args.include_password
         }
+        glance_kwargs = kwargs
+        glance_kwargs = kwargs.copy()
 
         endpoint = args.murano_url
+        glance_endpoint = args.glance_url
 
         if not args.os_no_client_auth:
             _ksclient = self._get_ksclient(**kwargs)
@@ -332,15 +346,38 @@ class MuranoShell(object):
                 'endpoint_type': args.os_endpoint_type,
                 'include_pass': args.include_password
             }
+            glance_kwargs = kwargs.copy()
 
             if args.os_region_name:
                 kwargs['region_name'] = args.os_region_name
+                glance_kwargs['region_name'] = args.os_region_name
 
             if not endpoint:
                 endpoint = self._get_endpoint(_ksclient, **kwargs)
 
         if args.api_timeout:
             kwargs['timeout'] = args.api_timeout
+
+        if not glance_endpoint:
+            try:
+                glance_endpoint = self._get_endpoint(
+                    _ksclient, service_type='image')
+            except Exception:
+                pass
+
+        glance_client = None
+        if glance_endpoint:
+            try:
+                glance_client = glanceclient.Client(
+                    '1', glance_endpoint, **glance_kwargs)
+            except Exception:
+                pass
+        if glance_client:
+            kwargs['glance_client'] = glance_client
+        else:
+            logger.warning("Could not initialise glance client. "
+                           "Image creation will be unavailable.")
+            kwargs['glance_client'] = None
 
         client = apiclient.Client(api_version, endpoint, **kwargs)
 
@@ -394,7 +431,7 @@ def main(args=None):
         if '--debug' in args or '-d' in args:
             raise
         else:
-            print(strutils.safe_encode(six.text_type(e)), file=sys.stderr)
+            print(encodeutils.safe_encode(six.text_type(e)), file=sys.stderr)
         sys.exit(1)
 
 

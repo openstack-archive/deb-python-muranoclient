@@ -20,7 +20,9 @@ import testtools
 from muranoclient import client
 from muranoclient.v1 import actions
 import muranoclient.v1.environments as environments
+from muranoclient.v1 import packages
 import muranoclient.v1.sessions as sessions
+import muranoclient.v1.templates as templates
 
 
 def my_mock(*a, **b):
@@ -195,8 +197,111 @@ class UnitTestsForClassesAndFunctions(testtools.TestCase):
         self.assertRaises(TypeError, manager.deploy)
 
     def test_action_manager_call(self):
-        manager = actions.ActionManager(api)
+        api_mock = mock.MagicMock(
+            json_request=lambda *args, **kwargs: (None, {'task_id': '1234'}))
+        manager = actions.ActionManager(api_mock)
         result = manager.call('testEnvId', 'testActionId', ['arg1', 'arg2'])
-        self.assertEqual(('POST',
-                          '/v1/environments/testEnvId/actions/testActionId'),
-                         result)
+        self.assertEqual('1234', result)
+
+    def test_package_filter_pagination_next_marker(self):
+        """``PackageManager.filter`` handles `next_marker` parameter related
+        to pagination in API correctly.
+        """
+        responses = [
+            {'next_marker': 'test_marker',
+             'packages': [{'name': 'test_package_1'}]},
+            {'packages': [{'name': 'test_package_2'}]}
+        ]
+
+        def json_request(method, url, *args, **kwargs):
+            self.assertIn('/v1/catalog/packages', url)
+
+            return mock.MagicMock(), responses.pop(0)
+
+        api = mock.MagicMock()
+        api.configure_mock(**{'json_request.side_effect': json_request})
+
+        manager = packages.PackageManager(api)
+        list(manager.filter())
+
+        self.assertEqual(api.json_request.call_count, 2)
+
+    def test_action_manager_get_result(self):
+        api_mock = mock.MagicMock(
+            json_request=lambda *args, **kwargs: (None, {'a': 'b'}))
+        manager = actions.ActionManager(api_mock)
+        result = manager.get_result('testEnvId', '1234')
+        self.assertEqual({'a': 'b'}, result)
+
+    def test_env_template_manager_list(self):
+        """It tests the list of environment templates.
+        """
+        manager = templates.EnvTemplateManager(api)
+        result = manager.list()
+
+        self.assertEqual([], result)
+
+    def test_env_template_manager_create(self):
+        manager = templates.EnvTemplateManager(api)
+        result = manager.create({'name': 'test'})
+
+        self.assertEqual({'name': 'test'}, result.data)
+
+    def test_env_template_manager_create_with_named_parameters(self):
+        manager = templates.EnvTemplateManager(api)
+        result = manager.create(data={'name': 'test'})
+
+        self.assertEqual({'name': 'test'}, result.data)
+
+    def test_env_template_manager_create_negative_without_parameters(self):
+        manager = templates.EnvTemplateManager(api)
+        self.assertRaises(TypeError, manager.create)
+
+    def test_env_template_manager_delete(self):
+        manager = templates.EnvTemplateManager(api)
+        result = manager.delete('test')
+
+        self.assertIsNone(result)
+
+    def test_env_template_manager_delete_with_named_parameters(self):
+        manager = templates.EnvTemplateManager(api)
+        result = manager.delete(env_template_id='1')
+
+        self.assertIsNone(result)
+
+    def test_env_template_manager_delete_negative_without_parameters(self):
+
+        manager = templates.EnvTemplateManager(api)
+
+        self.assertRaises(TypeError, manager.delete)
+
+    def test_env_template_manager_update(self):
+        manager = templates.EnvTemplateManager(api)
+        result = manager.update('1', 'test')
+
+        self.assertEqual({'name': 'test'}, result.data)
+
+    def test_env_template_manager_update_with_named_parameters(self):
+        manager = templates.EnvTemplateManager(api)
+        result = manager.update(env_template_id='1',
+                                name='test')
+
+        self.assertEqual({'name': 'test'}, result.data)
+
+    def test_env_template_manager_update_negative_with_one_parameter(self):
+
+        manager = templates.EnvTemplateManager(api)
+
+        self.assertRaises(TypeError, manager.update, 'test')
+
+    def test_env_template_manager_update_negative_without_parameters(self):
+
+        manager = templates.EnvTemplateManager(api)
+
+        self.assertRaises(TypeError, manager.update)
+
+    def test_env_template_manager_get(self):
+        manager = templates.EnvTemplateManager(api)
+        result = manager.get('test')
+
+        self.assertIsNotNone(result.manager)

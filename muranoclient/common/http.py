@@ -18,13 +18,13 @@ import logging
 import os
 import socket
 
+from oslo.serialization import jsonutils
+from oslo.utils import encodeutils
 import requests
 import six
 from six.moves.urllib import parse
 
 from muranoclient.common import exceptions as exc
-from muranoclient.openstack.common import jsonutils
-from muranoclient.openstack.common import strutils
 
 LOG = logging.getLogger(__name__)
 USER_AGENT = 'python-muranoclient'
@@ -83,8 +83,8 @@ class HTTPClient(object):
         curl = ['curl -i -X %s' % method]
 
         for (key, value) in kwargs['headers'].items():
-            header = '-H \'%s: %s\'' % (strutils.safe_decode(key),
-                                        strutils.safe_decode(value))
+            header = '-H \'%s: %s\'' % (encodeutils.safe_decode(key),
+                                        encodeutils.safe_decode(value))
             curl.append(header)
 
         conn_params_fmt = [
@@ -116,7 +116,7 @@ class HTTPClient(object):
             content = resp.content
             if isinstance(content, six.binary_type):
                 try:
-                    content = strutils.safe_decode(resp.content)
+                    content = encodeutils.safe_decode(resp.content)
                 except UnicodeDecodeError:
                     pass
                 else:
@@ -175,7 +175,9 @@ class HTTPClient(object):
             message = ("Error finding address for %(url)s: %(e)s" %
                        {'url': self.endpoint_url + url, 'e': e})
             raise exc.InvalidEndpoint(message=message)
-        except (socket.error, socket.timeout) as e:
+        except (socket.error,
+                socket.timeout,
+                requests.exceptions.ConnectionError) as e:
             endpoint = self.endpoint
             message = ("Error communicating with %(endpoint)s %(e)s" %
                        {'endpoint': endpoint, 'e': e})
@@ -239,7 +241,7 @@ class HTTPClient(object):
         resp = self._http_request(url, method, **kwargs)
         body = resp.content
 
-        if 'application/json' in resp.headers.get('content-type', None):
+        if body and 'application/json' in resp.headers['content-type']:
             try:
                 body = resp.json()
             except ValueError:
@@ -255,9 +257,6 @@ class HTTPClient(object):
             method, url, content_type=content_type, **kwargs)
 
     def raw_request(self, method, url, **kwargs):
-        kwargs.setdefault('headers', {})
-        kwargs['headers'].setdefault('Content-Type',
-                                     'application/octet-stream')
         if 'body' in kwargs:
             if 'data' in kwargs:
                 raise ValueError("Can't provide both 'data' and "

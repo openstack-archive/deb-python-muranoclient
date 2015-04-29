@@ -12,16 +12,16 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-import json
+import logging
 import urllib
 
-import requests
+from oslo.serialization import jsonutils
 import yaml
 
 from muranoclient.common import base
 from muranoclient.common import exceptions
-from muranoclient.common import http
 
+LOG = logging.getLogger(__name__)
 
 DEFAULT_PAGE_SIZE = 20
 
@@ -47,33 +47,44 @@ class Category(base.Resource):
 
 class PackageManager(base.Manager):
     resource_class = Package
+    _tracked_packages = set()
 
     def categories(self):
         return self._list('/v1/catalog/packages/categories',
                           response_key='categories', obj_class=Category)
 
     def create(self, data, files):
-        data = {'data': json.dumps(data)}
-        url = '{0}/v1/catalog/packages'.format(self.api.endpoint)
-        headers = {'X-Auth-Token': self.api.auth_token}
-        response = requests.post(url, data=data, files=files, headers=headers)
-        http.HTTPClient.log_http_response(response)
+        response = self.api.raw_request(
+            'POST',
+            '/v1/catalog/packages',
+            data={'__metadata__': jsonutils.dumps(data)},
+            files=files
+        )
         if not response.ok:
             setattr(response, 'status', response.status_code)
             raise exceptions.from_response(response)
-        return self.resource_class(self, json.loads(response.content))
+        body = jsonutils.loads(response.text)
+        return self.resource_class(self, body)
 
     def get(self, app_id):
         return self._get('/v1/catalog/packages/{0}'.format(app_id))
 
     def filter(self, **kwargs):
+        def construct_url(params):
+            return '?'.join(
+                ['/v1/catalog/packages', urllib.urlencode(params, doseq=True)]
+            )
+
         def paginate(_url):
             # code from Glance
             resp, body = self.api.json_request('GET', _url)
             for image in body['packages']:
                 yield image
             try:
-                next_url = body['next_marker']
+                next_url = construct_url(
+                    dict(kwargs.items() +
+                         {'marker': body['next_marker']}.items())
+                )
             except KeyError:
                 return
             else:
@@ -81,12 +92,11 @@ class PackageManager(base.Manager):
                     yield image
 
         if 'page_size' not in kwargs:
-            kwargs['limit'] = DEFAULT_PAGE_SIZE
+            kwargs['limit'] = kwargs.get('limit', DEFAULT_PAGE_SIZE)
         else:
             kwargs['limit'] = kwargs['page_size']
 
-        query_str = urllib.urlencode(kwargs, doseq=True)
-        url = '?'.join(['/v1/catalog/packages', query_str])
+        url = construct_url(kwargs)
 
         for package in paginate(url):
             yield self.resource_class(self, package, loaded=True)

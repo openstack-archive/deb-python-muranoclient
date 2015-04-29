@@ -14,6 +14,7 @@
 
 from muranoclient.common import http
 from muranoclient.v1 import actions
+from muranoclient.v1 import categories
 from muranoclient.v1 import deployments
 from muranoclient.v1 import environments
 from muranoclient.v1 import instance_statistics
@@ -21,6 +22,7 @@ from muranoclient.v1 import packages
 from muranoclient.v1 import request_statistics
 from muranoclient.v1 import services
 from muranoclient.v1 import sessions
+from muranoclient.v1 import templates
 
 
 class Client(http.HTTPClient):
@@ -34,8 +36,10 @@ class Client(http.HTTPClient):
 
     def __init__(self, *args, **kwargs):
         """Initialize a new client for the Murano v1 API."""
+        self.glance_client = kwargs.pop('glance_client', None)
         super(Client, self).__init__(*args, **kwargs)
         self.environments = environments.EnvironmentManager(self)
+        self.env_templates = templates.EnvTemplateManager(self)
         self.sessions = sessions.SessionManager(self)
         self.services = services.ServiceManager(self)
         self.deployments = deployments.DeploymentManager(self)
@@ -45,3 +49,4 @@ class Client(http.HTTPClient):
             instance_statistics.InstanceStatisticsManager(self)
         self.packages = packages.PackageManager(self)
         self.actions = actions.ActionManager(self)
+        self.categories = categories.CategoryManager(self)
