@@ -1,3 +1,9 @@
+python-muranoclient (0.5.9-1) unstable; urgency=medium
+
+  * New upstream release.
+
+ -- Thomas Goirand <zigo@debian.org>  Wed, 06 May 2015 07:49:19 +0000
+
 python-muranoclient (0.5.7-1) unstable; urgency=medium
 
   * New upstream release.
