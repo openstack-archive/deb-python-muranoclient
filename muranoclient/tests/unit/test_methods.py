@@ -12,10 +12,10 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-import logging
-
 import mock
 import testtools
+
+from oslo_log import log as logging
 
 from muranoclient import client
 from muranoclient.v1 import actions
@@ -224,7 +224,28 @@ class UnitTestsForClassesAndFunctions(testtools.TestCase):
         manager = packages.PackageManager(api)
         list(manager.filter())
 
-        self.assertEqual(api.json_request.call_count, 2)
+        self.assertEqual(2, api.json_request.call_count)
+
+    def test_package_filter_encoding_good(self):
+        responses = [
+            {'next_marker': 'test_marker',
+             'packages': [{'name': 'test_package_1'}]},
+            {'packages': [{'name': 'test_package_2'}]}
+        ]
+
+        def json_request(method, url, *args, **kwargs):
+            self.assertIn('category=%D0%BF%D0%B8%D0%B2%D0%BE', url)
+            return mock.MagicMock(), responses.pop(0)
+
+        api = mock.MagicMock()
+        api.configure_mock(**{'json_request.side_effect': json_request})
+
+        manager = packages.PackageManager(api)
+        category = '\xd0\xbf\xd0\xb8\xd0\xb2\xd0\xbe'
+        kwargs = {'category': category.decode('utf-8')}
+        list(manager.filter(**kwargs))
+
+        self.assertEqual(2, api.json_request.call_count)
 
     def test_action_manager_get_result(self):
         api_mock = mock.MagicMock(

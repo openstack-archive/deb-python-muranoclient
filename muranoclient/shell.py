@@ -19,17 +19,19 @@ Command-line interface to the Murano Project.
 from __future__ import print_function
 
 import argparse
-import logging
 import sys
 
 import glanceclient
 from keystoneclient.v2_0 import client as ksclient
-from oslo.utils import encodeutils
+from oslo_log import log as logging
+from oslo_utils import encodeutils
 import six
 
+import muranoclient
 from muranoclient import client as apiclient
 from muranoclient.common import utils
 from muranoclient.openstack.common.apiclient import exceptions as exc
+from muranoclient.openstack.common.gettextutils import _
 
 
 logger = logging.getLogger(__name__)
@@ -51,14 +53,19 @@ class MuranoShell(object):
                             action='store_true',
                             help=argparse.SUPPRESS,)
 
+        parser.add_argument('--version',
+                            action='version',
+                            version=muranoclient.__version__,
+                            help="Show program's version number and exit.")
+
         parser.add_argument('-d', '--debug',
                             default=bool(utils.env('MURANOCLIENT_DEBUG')),
                             action='store_true',
-                            help='Defaults to env[MURANOCLIENT_DEBUG]')
+                            help='Defaults to env[MURANOCLIENT_DEBUG].')
 
         parser.add_argument('-v', '--verbose',
                             default=False, action="store_true",
-                            help="Print more verbose output")
+                            help="Print more verbose output.")
 
         parser.add_argument('-k', '--insecure',
                             default=False,
@@ -73,9 +80,10 @@ class MuranoShell(object):
         parser.add_argument('--os-cacert',
                             metavar='<ca-certificate>',
                             default=utils.env('OS_CACERT', default=None),
+                            dest='os_cacert',
                             help='Specify a CA bundle file to use in '
-                            'verifying a TLS (https) server certificate. '
-                            'Defaults to env[OS_CACERT]')
+                                 'verifying a TLS (https) server certificate. '
+                                 'Defaults to env[OS_CACERT].')
 
         parser.add_argument('--cert-file',
                             help='Path of certificate file to use in SSL '
@@ -83,48 +91,48 @@ class MuranoShell(object):
                                  'prepended with the private key.')
 
         parser.add_argument('--key-file',
-                            help='Path of client key to use in SSL connection.'
-                                 ' This option is not necessary if your '
-                                 'key is prepended to your cert file.')
+                            help='Path of client key to use '
+                                 'in SSL connection. This option '
+                                 'is not necessary if your key '
+                                 'is prepended to your cert file.')
 
         parser.add_argument('--ca-file',
-                            help='Path of CA SSL certificate(s) used to verify'
-                                 ' the remote server certificate. Without '
-                                 'this option glance looks for the default '
-                                 'system CA certificates.')
+                            dest='os_cacert',
+                            help=_('DEPRECATED! Use %(arg)s.') %
+                                 {'arg': '--os-cacert'})
 
         parser.add_argument('--api-timeout',
                             help='Number of seconds to wait for an '
                                  'API response, '
-                                 'defaults to system socket timeout')
+                                 'defaults to system socket timeout.')
 
         parser.add_argument('--os-username',
                             default=utils.env('OS_USERNAME'),
-                            help='Defaults to env[OS_USERNAME]')
+                            help='Defaults to env[OS_USERNAME].')
 
         parser.add_argument('--os-password',
                             default=utils.env('OS_PASSWORD'),
-                            help='Defaults to env[OS_PASSWORD]')
+                            help='Defaults to env[OS_PASSWORD].')
 
         parser.add_argument('--os-tenant-id',
                             default=utils.env('OS_TENANT_ID'),
-                            help='Defaults to env[OS_TENANT_ID]')
+                            help='Defaults to env[OS_TENANT_ID].')
 
         parser.add_argument('--os-tenant-name',
                             default=utils.env('OS_TENANT_NAME'),
-                            help='Defaults to env[OS_TENANT_NAME]')
+                            help='Defaults to env[OS_TENANT_NAME].')
 
         parser.add_argument('--os-auth-url',
                             default=utils.env('OS_AUTH_URL'),
-                            help='Defaults to env[OS_AUTH_URL]')
+                            help='Defaults to env[OS_AUTH_URL].')
 
         parser.add_argument('--os-region-name',
                             default=utils.env('OS_REGION_NAME'),
-                            help='Defaults to env[OS_REGION_NAME]')
+                            help='Defaults to env[OS_REGION_NAME].')
 
         parser.add_argument('--os-auth-token',
                             default=utils.env('OS_AUTH_TOKEN'),
-                            help='Defaults to env[OS_AUTH_TOKEN]')
+                            help='Defaults to env[OS_AUTH_TOKEN].')
 
         parser.add_argument('--os-no-client-auth',
                             default=utils.env('OS_NO_CLIENT_AUTH'),
@@ -134,25 +142,25 @@ class MuranoShell(object):
 
         parser.add_argument('--murano-url',
                             default=utils.env('MURANO_URL'),
-                            help='Defaults to env[MURANO_URL]')
+                            help='Defaults to env[MURANO_URL].')
 
         parser.add_argument('--glance-url',
                             default=utils.env('GLANCE_URL'),
-                            help='Defaults to env[GLANCE_URL]')
+                            help='Defaults to env[GLANCE_URL].')
 
         parser.add_argument('--murano-api-version',
                             default=utils.env(
                                 'MURANO_API_VERSION', default='1'),
                             help='Defaults to env[MURANO_API_VERSION] '
-                                 'or 1')
+                                 'or 1.')
 
         parser.add_argument('--os-service-type',
                             default=utils.env('OS_SERVICE_TYPE'),
-                            help='Defaults to env[OS_SERVICE_TYPE]')
+                            help='Defaults to env[OS_SERVICE_TYPE].')
 
         parser.add_argument('--os-endpoint-type',
                             default=utils.env('OS_ENDPOINT_TYPE'),
-                            help='Defaults to env[OS_ENDPOINT_TYPE]')
+                            help='Defaults to env[OS_ENDPOINT_TYPE].')
 
         parser.add_argument('--include-password',
                             default=bool(utils.env('MURANO_INCLUDE_PASSWORD')),
@@ -160,10 +168,11 @@ class MuranoShell(object):
                             help='Send os-username and os-password to murano.')
 
         parser.add_argument('--murano-repo-url',
-                            default=utils.env('MURANO_REPO_URL',
-                                              default='http://127.0.0.1'),
+                            default=utils.env(
+                                'MURANO_REPO_URL',
+                                default='http://storage.apps.openstack.org'),
                             help=('Defaults to env[MURANO_REPO_URL] '
-                                  'or 127.0.0.1'))
+                                  'or http://storage.apps.openstack.org.'))
 
         return parser
 
@@ -175,6 +184,8 @@ class MuranoShell(object):
         submodule = utils.import_versioned_module(version, 'shell')
         self._find_actions(subparsers, submodule)
         self._find_actions(subparsers, self)
+
+        self._add_bash_completion_subparser(subparsers)
 
         return parser
 
@@ -240,22 +251,10 @@ class MuranoShell(object):
             service_type=kwargs.get('service_type') or 'application_catalog',
             endpoint_type=kwargs.get('endpoint_type') or 'publicURL')
 
-    def _setup_logging(self, debug):
-        log_lvl = logging.DEBUG if debug else logging.WARNING
-        logging.basicConfig(
-            format="%(levelname)s (%(module)s:%(lineno)d) %(message)s",
-            level=log_lvl)
-
-    def _setup_verbose(self, verbose):
-        if verbose:
-            exc.verbose = 1
-
     def main(self, argv):
         # Parse args once to find version
         parser = self.get_base_parser()
         (options, args) = parser.parse_known_args(argv)
-        self._setup_logging(options.debug)
-        self._setup_verbose(options.verbose)
 
         # build available subcommands based on version
         api_version = options.murano_api_version
@@ -338,7 +337,7 @@ class MuranoShell(object):
             kwargs = {
                 'token': token,
                 'insecure': args.insecure,
-                'ca_file': args.ca_file,
+                'cacert': args.os_cacert,
                 'cert_file': args.cert_file,
                 'key_file': args.key_file,
                 'username': args.os_username,

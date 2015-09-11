@@ -11,6 +11,7 @@
 #    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 #    License for the specific language governing permissions and limitations
 #    under the License.
+import urllib
 
 from muranoclient.common import base
 
@@ -34,8 +35,10 @@ class Status(base.Resource):
 class EnvironmentManager(base.ManagerWithFind):
     resource_class = Environment
 
-    def list(self):
-        return self._list('/v1/environments', 'environments')
+    def list(self, all_tenants=False):
+        path = '/v1/environments?{query}'.format(
+            query=urllib.urlencode({'all_tenants': all_tenants}))
+        return self._list(path, 'environments')
 
     def create(self, data):
         return self._create('/v1/environments', data)
@@ -44,8 +47,10 @@ class EnvironmentManager(base.ManagerWithFind):
         return self._update('/v1/environments/{id}'.format(id=environment_id),
                             data={'name': name})
 
-    def delete(self, environment_id):
-        return self._delete('/v1/environments/{id}'.format(id=environment_id))
+    def delete(self, environment_id, abandon=False):
+        path = '/v1/environments/{id}?{query}'.format(
+            id=environment_id, query=urllib.urlencode({'abandon': abandon}))
+        return self._delete(path)
 
     def get(self, environment_id, session_id=None):
         if session_id:

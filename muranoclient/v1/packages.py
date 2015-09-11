@@ -12,10 +12,11 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-import logging
+import six
 import urllib
 
-from oslo.serialization import jsonutils
+from oslo_log import log as logging
+from oslo_serialization import jsonutils
 import yaml
 
 from muranoclient.common import base
@@ -70,7 +71,12 @@ class PackageManager(base.Manager):
         return self._get('/v1/catalog/packages/{0}'.format(app_id))
 
     def filter(self, **kwargs):
+
         def construct_url(params):
+            for k, v in params.items():
+                if isinstance(v, six.text_type):
+                    v = v.encode('utf-8')
+                    params[k] = v
             return '?'.join(
                 ['/v1/catalog/packages', urllib.urlencode(params, doseq=True)]
             )

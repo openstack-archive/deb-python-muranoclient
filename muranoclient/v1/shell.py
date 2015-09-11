@@ -12,11 +12,16 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import functools
+import json
 import os
 import shutil
 import sys
-import tempfile
+import uuid
 import zipfile
+
+import jsonpatch
+from oslo_utils import strutils
 
 from muranoclient.common import exceptions as common_exceptions
 from muranoclient.common import utils
@@ -24,32 +29,71 @@ from muranoclient.openstack.common.apiclient import exceptions
 from muranoclient.v1.package_creator import hot_package
 from muranoclient.v1.package_creator import mpl_package
 
+_bool_from_str_strict = functools.partial(
+    strutils.bool_from_string, strict=True)
 
+
+@utils.arg('--all-tenants', action='store_true', default=False,
+           help='Allows to list environments from all tenants'
+                ' (admin only).')
 def do_environment_list(mc, args={}):
     """List the environments."""
-    environments = mc.environments.list()
+    all_tenants = getattr(args, 'all_tenants', False)
+    environments = mc.environments.list(all_tenants)
     field_labels = ['ID', 'Name', 'Created', 'Updated']
     fields = ['id', 'name', 'created', 'updated']
     utils.print_list(environments, fields, field_labels, sortby=0)
 
 
+def _generate_join_existing_net(net, subnet):
+    res = {
+        'defaultNetworks': {
+            'environment': {
+                '?': {
+                    'id': uuid.uuid4().hex,
+                    'type': 'io.murano.resources.ExistingNeutronNetwork'
+                },
+            },
+            'flat': None
+        }
+    }
+    if net:
+        res['defaultNetworks']['environment']['internalNetworkName'] = net
+    if subnet:
+        res['defaultNetworks']['environment']['internalSubnetworkName'] = \
+            subnet
+    return res
+
+
+@utils.arg("--join-net-id", metavar="<NET_ID>",
+           help="Network id to join.",)
+@utils.arg("--join-subnet-id", metavar="<SUBNET_ID>",
+           help="Subnetwork id to join.",)
 @utils.arg("name", metavar="<ENVIRONMENT_NAME>",
-           help="Environment name")
+           help="Environment name.")
 def do_environment_create(mc, args):
     """Create an environment."""
-    mc.environments.create({"name": args.name})
+    body = {"name": args.name}
+    if args.join_net_id or args.join_subnet_id:
+        body.update(_generate_join_existing_net(
+            args.join_net_id, args.join_subnet_id))
+    mc.environments.create(body)
     do_environment_list(mc)
 
 
 @utils.arg("id", metavar="<NAME or ID>",
-           nargs="+", help="Id or name of environment(s) to delete")
+           nargs="+", help="Id or name of environment(s) to delete.")
+@utils.arg('--abandon', action='store_true', default=False,
+           help='If set will abandon environment without deleting any'
+                ' of its resources.')
 def do_environment_delete(mc, args):
     """Delete an environment."""
+    abandon = getattr(args, 'abandon', False)
     failure_count = 0
     for environment_id in args.id:
         try:
             environment = utils.find_resource(mc.environments, environment_id)
-            mc.environments.delete(environment.id)
+            mc.environments.delete(environment.id, abandon)
         except exceptions.NotFound:
             failure_count += 1
             print("Failed to delete '{0}'; environment not found".
@@ -61,9 +105,9 @@ def do_environment_delete(mc, args):
 
 
 @utils.arg("id", metavar="<NAME or ID>",
-           help="Environment id or name")
+           help="Environment ID or name.")
 @utils.arg("name", metavar="<ENVIRONMENT_NAME>",
-           help="Name to which the environment will be renamed")
+           help="A name to which the environment will be renamed.")
 def do_environment_rename(mc, args):
     """Rename an environment."""
     try:
@@ -76,23 +120,138 @@ def do_environment_rename(mc, args):
 
 
 @utils.arg("id", metavar="<NAME or ID>",
-           help="Environment id or name")
+           help="Environment ID or name.")
+@utils.arg("--session-id", metavar="<SESSION_ID>", default='',
+           help="Id of a config session.")
+@utils.arg("--only-apps", action='store_true',
+           help="Only print apps of the environment (useful for automation).")
 def do_environment_show(mc, args):
     """Display environment details."""
     try:
-        environment = utils.find_resource(mc.environments, args.id)
+        environment = utils.find_resource(
+            mc.environments, args.id, session_id=args.session_id)
     except exceptions.NotFound:
         raise exceptions.CommandError("Environment %s not found" % args.id)
     else:
-        formatters = {
-            "id": utils.text_wrap_formatter,
-            "created": utils.text_wrap_formatter,
-            "name": utils.text_wrap_formatter,
-            "tenant_id": utils.text_wrap_formatter,
-            "services": utils.json_formatter,
+        if getattr(args, 'only_apps', False):
+            print(utils.json_formatter(environment.services))
+        else:
+            formatters = {
+                "id": utils.text_wrap_formatter,
+                "created": utils.text_wrap_formatter,
+                "name": utils.text_wrap_formatter,
+                "tenant_id": utils.text_wrap_formatter,
+                "services": utils.json_formatter,
 
-        }
-        utils.print_dict(environment.to_dict(), formatters=formatters)
+            }
+            utils.print_dict(environment.to_dict(), formatters=formatters)
+
+
+@utils.arg("id", metavar="<ID>",
+           help="ID of Environment to deploy.")
+@utils.arg("--session-id", metavar="<SESSION>",
+           required=True,
+           help="ID of configuration session to deploy.")
+def do_environment_deploy(mc, args):
+    """Start deployment of a murano environment session."""
+    mc.sessions.deploy(args.id, args.session_id)
+    do_environment_show(mc, args)
+
+
+@utils.arg("id", help="ID of Environment to call action against.")
+@utils.arg("--action-id", metavar="<ACTION>",
+           required=True,
+           help="ID of action to run.")
+@utils.arg("--arguments", metavar='<KEY=VALUE>', nargs='*',
+           help="Action arguments.")
+def do_environment_action_call(mc, args):
+    """Call action `ACTION` in environment `ID`.
+
+    Returns id of an asynchronous task, that executes the action.
+    Actions can only be called on a `deployed` environment.
+    To view actions available in a given environment use `environment-show`
+    command.
+    """
+    arguments = {}
+    for argument in args.arguments or []:
+        if '=' not in argument:
+            raise exceptions.CommandError(
+                "Argument should be in form of KEY=VALUE. Found: {0}".format(
+                    argument))
+        k, v = argument.split('=', 1)
+        arguments[k] = v
+    task_id = mc.actions.call(
+        args.id, args.action_id, arguments=arguments)
+    print("Created task, id: {0}".format(task_id))
+
+
+@utils.arg("id", metavar="<ID>",
+           help="ID of Environment where task is being executed.")
+@utils.arg("--task-id", metavar="<TASK>",
+           required=True,
+           help="ID of action to run.")
+def do_environment_action_get_result(mc, args):
+    """Get result of `TASK` in environment `ID`."""
+    result = mc.actions.call(args.id, args.task_id)
+    print("Task id result: {0}".format(result))
+
+
+@utils.arg("id", metavar="<ID>", help="ID of Environment to add session to.")
+def do_environment_session_create(mc, args):
+    """Creates a new configuration session for environment ID."""
+    environment_id = args.id
+    session_id = mc.sessions.configure(environment_id).id
+    print("Created new session: {0}".format(session_id))
+
+
+@utils.arg("id", metavar="<ID>", help="ID of Environment to edit.")
+@utils.arg("filename", metavar="FILE", nargs="?",
+           help="File to read jsonpatch from (defaults to stdin).")
+@utils.arg("--session-id", metavar="<SESSION_ID>",
+           required=True,
+           help="Id of a config session.")
+def do_environment_apps_edit(mc, args):
+    """Edit environment's object model.
+
+    `FILE` is path to a file, that contains jsonpatch, that describes changes
+    to be made to environment's object-model.
+
+    [
+        { "op": "add", "path": "/-",
+           "value": { ... your-app object model here ... }
+        },
+        { "op": "replace", "path": "/0/?/name",
+          "value": "new_name"
+        },
+    ]
+
+    NOTE: Values '===id1===', '===id2===', etc. in the resulting object-model
+    will be substituted with uuids.
+
+    For more info on jsonpatch see RFC 6902
+    """
+
+    jp_obj = None
+    if not args.filename:
+        jp_obj = json.load(sys.stdin)
+    else:
+        with open(args.filename) as fpatch:
+            jp_obj = json.load(fpatch)
+
+    jpatch = jsonpatch.JsonPatch(jp_obj)
+
+    environment_id = args.id
+    session_id = args.session_id
+    environment = mc.environments.get(environment_id, session_id)
+
+    object_model = jpatch.apply(environment.services)
+    utils.traverse_and_replace(object_model)
+
+    mc.services.put(
+        environment_id,
+        path='/',
+        data=jpatch.apply(environment.services),
+        session_id=session_id)
 
 
 def do_env_template_list(mc, args={}):
@@ -104,7 +263,7 @@ def do_env_template_list(mc, args={}):
 
 
 @utils.arg("name", metavar="<ENV_TEMPLATE_NAME>",
-           help="Environment Template name")
+           help="Environment template name.")
 def do_env_template_create(mc, args):
     """Create an environment template."""
     mc.env_templates.create({"name": args.name})
@@ -112,7 +271,7 @@ def do_env_template_create(mc, args):
 
 
 @utils.arg("id", metavar="<ID>",
-           help="Environment Template id")
+           help="Environment template ID.")
 def do_env_template_show(mc, args):
     """Display environment template details."""
     try:
@@ -133,7 +292,7 @@ def do_env_template_show(mc, args):
 
 
 @utils.arg("name", metavar="<ENV_TEMPLATE_NAME>",
-           help="Environment Template name")
+           help="Environment template name.")
 @utils.arg('app_template_file', metavar='<FILE>',
            help='Path to the template.')
 def do_env_template_add_app(mc, args):
@@ -145,19 +304,19 @@ def do_env_template_add_app(mc, args):
 
 
 @utils.arg("id", metavar="<ENV_TEMPLATE_ID>",
-           help="Environment Template ID")
-@utils.arg("service_id", metavar="<ENV_TEMPLATE_APP_ID>",
-           help="Application Id")
+           help="Environment template ID.")
+@utils.arg("app_id", metavar="<ENV_TEMPLATE_APP_ID>",
+           help="Application ID.")
 def do_env_template_del_app(mc, args):
-    """Delete application to the environment template."""
-    mc.env_templates.delete_app(args.name, args.service_id)
+    """Delete application from the environment template."""
+    mc.env_templates.delete_app(args.name, args.app_id)
     do_env_template_list(mc)
 
 
 @utils.arg("id", metavar="<ID>",
-           help="Environment Template id")
+           help="Environment template ID.")
 @utils.arg("name", metavar="<ENV_TEMPLATE_NAME>",
-           help="Environment Template name")
+           help="Environment template name.")
 def do_env_template_update(mc, args):
     """Update an environment template."""
     mc.env_templates.update(args.id, args.name)
@@ -165,7 +324,7 @@ def do_env_template_update(mc, args):
 
 
 @utils.arg("id", metavar="<ID>",
-           nargs="+", help="Id of environment(s) template to delete")
+           nargs="+", help="ID of environment(s) template to delete.")
 def do_env_template_delete(mc, args):
     """Delete an environment template."""
     failure_count = 0
@@ -183,7 +342,7 @@ def do_env_template_delete(mc, args):
 
 
 @utils.arg("id", metavar="<ID>",
-           help="Environment id for which to list deployments")
+           help="Environment ID for which to list deployments.")
 def do_deployment_list(mc, args):
     """List deployments for an environment."""
     try:
@@ -210,9 +369,9 @@ def do_package_list(mc, args={}):
 
 
 @utils.arg("id", metavar="<ID>",
-           help="Package ID to download")
+           help="Package ID to download.")
 @utils.arg("filename", metavar="file", nargs="?",
-           help="Filename for download (defaults to stdout)")
+           help="Filename for download (defaults to stdout).")
 def do_package_download(mc, args):
     """Download a package to a filename or stdout."""
 
@@ -231,7 +390,7 @@ def do_package_download(mc, args):
 
 
 @utils.arg("id", metavar="<ID>",
-           help="Package ID to show")
+           help="Package ID to show.")
 def do_package_show(mc, args):
     """Display details for a package."""
     try:
@@ -262,13 +421,23 @@ def do_package_show(mc, args):
 
 
 @utils.arg("id", metavar="<ID>",
-           help="Package ID to delete")
+           nargs='+', help="Package ID to delete.")
 def do_package_delete(mc, args):
     """Delete a package."""
-    try:
-        mc.packages.delete(args.id)
-    except exceptions.NotFound:
-        raise exceptions.CommandError("Package %s not found" % args.id)
+    failure_count = 0
+    for package_id in args.id:
+        try:
+            mc.packages.delete(package_id)
+            print("Deleted package  '{0}'".format(package_id))
+        except exceptions.NotFound:
+            raise exceptions.CommandError("Package %s not found" % package_id)
+            failure_count += 1
+            print("Failed to delete '{0}'; package not found".
+                  format(package_id))
+
+    if failure_count == len(args.id):
+        raise exceptions.CommandError("Unable to find and delete any of the "
+                                      "specified packages.")
     else:
         do_package_list(mc)
 
@@ -300,16 +469,16 @@ def _handle_package_exists(mc, data, package, exists_action):
                 pkgs = list(mc.packages.filter(fqn=name, owned=True))
                 if not pkgs:
                     msg = (
-                        "Got Conflict response, but couldn't find package "
-                        "'{0}' in the current tenant.\nThis probably means "
-                        "conflicting package is in another tenant.\n"
+                        "Got a conflict response, but could not find the "
+                        "package '{0}' in the current tenant.\nThis probably "
+                        "means the conflicting package is in another tenant.\n"
                         "Please delete it manually."
                     ).format(name)
                     raise exceptions.CommandError(msg)
                 elif len(pkgs) > 1:
                     msg = (
-                        "Got {0} packages with name '{1}'.\nI'm not trusting "
-                        "myself, please delete the package manually"
+                        "Got {0} packages with name '{1}'.\nI do not trust "
+                        "myself, please delete the package manually."
                     ).format(len(pkgs), name)
                     raise exceptions.CommandError(msg)
                 print("Deleting package {0}({1})".format(name, pkgs[0].id))
@@ -318,46 +487,62 @@ def _handle_package_exists(mc, data, package, exists_action):
 
 
 @utils.arg('filename', metavar='<FILE>',
-           help='Url of the murano zip package, FQPN, or path to zip package')
-@utils.arg('-c', '--categories', metavar='<CAT1 CAT2 CAT3>', nargs='*',
-           help='Category list to attach')
+           nargs='+',
+           help='URL of the murano zip package, FQPN, or path to zip package.')
+@utils.arg('-c', '--categories', metavar='<CATEGORY>', nargs='*',
+           help='Category list to attach.')
 @utils.arg('--is-public', action='store_true', default=False,
-           help='Make package available for user from other tenants')
+           help='Make the package available for users from other tenants.')
 @utils.arg('--version', default='',
-           help='Version of the package to use from repository')
+           help='Version of the package to use from repository '
+                '(ignored when importing with multiple packages).')
 @utils.arg('--exists-action', default='', choices=['a', 's', 'u'],
-           help='Default action when package already exists')
+           help='Default action when a package already exists.')
 def do_package_import(mc, args):
     """Import a package.
     `FILE` can be either a path to a zip file, url or a FQPN.
-    `categories` could be separated by a comma
+    You can use `--` to separate `FILE`s from other arguments.
+
+    Categories have to be separated with a space and have to be already
+    present in murano.
     """
     data = {"is_public": args.is_public}
+
+    version = args.version
+    if version and len(args.filename) >= 2:
+        print("Requested to import more than one package, "
+              "ignoring version.")
+        version = ''
 
     if args.categories:
         data["categories"] = args.categories
 
-    filename = args.filename
-    if os.path.isfile(filename):
-        _file = filename
-    else:
-        print("Package file '{0}' does not exist, attempting to download"
-              "".format(args.filename))
-        _file = utils.to_url(
-            filename,
-            version=args.version,
-            base_url=args.murano_repo_url,
-            extension='.zip',
-            path='apps/',
-        )
-    try:
-        package = utils.Package.from_file(_file)
-    except Exception as e:
-        print("Failed to create package for '{0}', reason: {1}".format(
-            args.filename, e))
-        return
-    reqs = package.requirements(base_url=args.murano_repo_url)
-    for name, package in reqs.iteritems():
+    should_do_list = False
+
+    total_reqs = {}
+    for filename in args.filename:
+        if os.path.isfile(filename):
+            _file = filename
+        else:
+            print("Package file '{0}' does not exist, attempting to download"
+                  "".format(filename))
+            _file = utils.to_url(
+                filename,
+                version=version,
+                base_url=args.murano_repo_url,
+                extension='.zip',
+                path='apps/',
+            )
+        try:
+            package = utils.Package.from_file(_file)
+        except Exception as e:
+            print("Failed to create package for '{0}', reason: {1}".format(
+                filename, e))
+            continue
+        should_do_list = True
+        total_reqs.update(package.requirements(base_url=args.murano_repo_url))
+
+    for name, package in total_reqs.iteritems():
         image_specs = package.images()
         if image_specs:
             print("Inspecting required images")
@@ -379,128 +564,305 @@ def do_package_import(mc, args):
         except Exception as e:
             print("Error {0} occurred while installing package {1}".format(
                 e, name))
-    do_package_list(mc)
+
+    if should_do_list:
+        do_package_list(mc)
+
+
+@utils.arg("id", metavar="<ID>",
+           help="Package ID to update.")
+@utils.arg('--is-public', type=_bool_from_str_strict, metavar='{true|false}',
+           help='Make package available to users from other tenants.')
+@utils.arg('--enabled', type=_bool_from_str_strict, metavar='{true|false}',
+           help='Make package active and available for deployments.')
+@utils.arg('--name', default=None, help='New name for the package.')
+@utils.arg('--description', default=None, help='New package description.')
+@utils.arg('--tags', metavar='<TAG>', nargs='*',
+           default=None,
+           help='A list of keywords connected to the application.')
+def do_package_update(mc, args):
+    """Edit the package in question"""
+    data = {}
+    parameters = ('is_public', 'enabled',
+                  'name', 'description',
+                  'tags')
+    for parameter in parameters:
+        param_value = getattr(args, parameter, None)
+        if param_value is not None:
+            data[parameter] = param_value
+
+    mc.packages.update(args.id, data)
+    do_package_show(mc, args)
 
 
 @utils.arg('filename', metavar='<FILE>',
-           help='Bundle url, bundle name, or path to the bundle file')
+           nargs='+',
+           help='Bundle URL, bundle name, or path to the bundle file.')
 @utils.arg('--is-public', action='store_true', default=False,
-           help='Make packages available to users from other tenants')
+           help='Make packages available to users from other tenants.')
 @utils.arg('--exists-action', default='', choices=['a', 's', 'u'],
-           help='Default action when package already exists')
+           help='Default action when a package already exists.')
 def do_bundle_import(mc, args):
     """Import a bundle.
-    `FILE` can be either a path to a zip file, url or name from repo.
-    if `FILE` is a local file does not attempt to parse requirements and
-    treat Names of packages in a bundle as file names, relative to location
-    of bundle file.
+    `FILE` can be either a path to a zip file, URL, or name from repo.
+    If `FILE` is a local file, treat names of packages in a bundle as
+    file names, relative to location of the bundle file. Requirements
+    are first searched in the same directory.
     """
-    local_path = None
-    if os.path.isfile(args.filename):
-        _file = args.filename
-        local_path = os.path.dirname(os.path.abspath(args.filename))
+    should_do_list = False
+    total_reqs = {}
+    for filename in args.filename:
+        local_path = None
+        if os.path.isfile(filename):
+            _file = filename
+            local_path = os.path.dirname(os.path.abspath(filename))
+        else:
+            print("Bundle file '{0}' does not exist, attempting to download"
+                  "".format(filename))
+            _file = utils.to_url(
+                filename,
+                base_url=args.murano_repo_url,
+                path='/bundles/',
+                extension='.bundle',
+            )
+
+        try:
+            bundle_file = utils.Bundle.from_file(_file)
+        except Exception as e:
+            print("Failed to create bundle for '{0}', reason: {1}".format(
+                filename, e))
+            continue
+
+        should_do_list = True
+        data = {"is_public": args.is_public}
+
+        for package in bundle_file.packages(
+                base_url=args.murano_repo_url, path=local_path):
+
+            requirements = package.requirements(
+                base_url=args.murano_repo_url,
+                path=local_path,
+            )
+            total_reqs.update(requirements)
+
+    for name, dep_package in total_reqs.iteritems():
+        image_specs = dep_package.images()
+        if image_specs:
+            print("Inspecting required images")
+            try:
+                imgs = utils.ensure_images(
+                    glance_client=mc.glance_client,
+                    image_specs=image_specs,
+                    base_url=args.murano_repo_url,
+                    local_path=local_path)
+                for img in imgs:
+                    print("Added {0}, {1} image".format(
+                        img['name'], img['id']))
+            except Exception as e:
+                print("Error {0} occurred while installing "
+                      "images for {1}".format(e, name))
+        try:
+            _handle_package_exists(
+                mc, data, dep_package, args.exists_action)
+        except exceptions.CommandError:
+            raise
+        except Exception as e:
+            print("Error {0} occurred while "
+                  "installing package {1}".format(e, name))
+    if should_do_list:
+        do_package_list(mc)
+
+
+def _handle_save_packages(packages, dst, base_url, no_images):
+    downloaded_images = []
+
+    for name, pkg in packages.iteritems():
+        if not no_images:
+            image_specs = pkg.images()
+            for image_spec in image_specs:
+                if not image_spec["Name"]:
+                    print("Invalid image.lst file for {0} package. "
+                          "'Name' section is absent.".format(name))
+                    continue
+                if image_spec["Name"] not in downloaded_images:
+                    print("Package {0} depends on image {1}. "
+                          "Downloading...".format(name, image_spec["Name"]))
+                    try:
+                        utils.save_image_local(image_spec, base_url, dst)
+                        downloaded_images.append(image_spec["Name"])
+                    except Exception as e:
+                        print("Error {0} occurred while saving image {1}".
+                              format(e, image_spec["Name"]))
+
+        try:
+            pkg.save(dst)
+            print("Package {0} has been successfully saved".format(name))
+        except Exception as e:
+            print("Error {0} occurred while saving package {1}".format(
+                e, name))
+
+
+@utils.arg('filename', metavar='<BUNDLE>',
+           help='Bundle URL, bundle name, or path to the bundle file.')
+@utils.arg('-p', '--path', metavar='<PATH>',
+           help='Path to the directory to store packages. If not set will use '
+                'current directory.')
+@utils.arg('--no-images', action='store_true', default=False,
+           help='If set will skip images downloading.')
+def do_bundle_save(mc, args):
+    """Save a bundle.
+    This will download a bundle of packages with all dependencies
+    to specified path. If path doesn't exist it will be created.
+    """
+
+    bundle = args.filename
+    base_url = args.murano_repo_url
+
+    if args.path:
+        if not os.path.exists(args.path):
+            os.makedirs(args.path)
+        dst = args.path
+    else:
+        dst = os.getcwd()
+
+    total_reqs = {}
+
+    if os.path.isfile(bundle):
+        _file = bundle
     else:
         print("Bundle file '{0}' does not exist, attempting to download"
-              "".format(args.filename))
+              .format(bundle))
         _file = utils.to_url(
-            args.filename,
-            base_url=args.murano_repo_url,
+            bundle,
+            base_url=base_url,
             path='/bundles/',
             extension='.bundle',
         )
-
     try:
         bundle_file = utils.Bundle.from_file(_file)
     except Exception as e:
-        print("Failed to create bundle for '{0}', reason: {1}".format(
-            args.filename, e))
-        return
+        msg = "Failed to create bundle for {0}, reason: {1}".format(bundle, e)
+        raise exceptions.CommandError(msg)
 
-    data = {"is_public": args.is_public}
+    for package in bundle_file.packages(base_url=base_url):
+        requirements = package.requirements(base_url=base_url)
+        total_reqs.update(requirements)
 
-    for package in bundle_file.packages(
-            base_url=args.murano_repo_url, path=local_path):
+    no_images = getattr(args, 'no_images', False)
 
-        requirements = package.requirements(
-            base_url=args.murano_repo_url,
-            path=local_path,
+    _handle_save_packages(total_reqs, dst, base_url, no_images)
+
+    try:
+        bundle_file.save(dst)
+        print("Bundle file {0} has been successfully saved".format(bundle))
+    except Exception as e:
+        print("Error {0} occurred while saving bundle {1}".format(e, bundle))
+
+
+@utils.arg('package', metavar='<PACKAGE>',
+           nargs='+',
+           help='Package URL or name.')
+@utils.arg('-p', '--path', metavar='<PATH>',
+           help='Path to the directory to store package. If not set will use '
+                'current directory.')
+@utils.arg('--version', default='',
+           help='Version of the package to use from repository '
+                '(ignored when saving with multiple packages).')
+@utils.arg('--no-images', action='store_true', default=False,
+           help='If set will skip images downloading.')
+def do_package_save(mc, args):
+    """Save a package.
+    This will download package(s) with all dependencies
+    to specified path. If path doesn't exist it will be created.
+    """
+    base_url = args.murano_repo_url
+
+    if args.path:
+        if not os.path.exists(args.path):
+            os.makedirs(args.path)
+        dst = args.path
+    else:
+        dst = os.getcwd()
+
+    version = args.version
+    if version and len(args.filename) >= 2:
+        print("Requested to save more than one package, "
+              "ignoring version.")
+        version = ''
+
+    total_reqs = {}
+    for package in args.package:
+        _file = utils.to_url(
+            package,
+            version=version,
+            base_url=base_url,
+            extension='.zip',
+            path='apps/',
         )
-        for name, dep_package in requirements.iteritems():
-            image_specs = dep_package.images()
-            if image_specs:
-                print("Inspecting required images")
-                try:
-                    imgs = utils.ensure_images(
-                        glance_client=mc.glance_client,
-                        image_specs=image_specs,
-                        base_url=args.murano_repo_url,
-                        local_path=local_path)
-                    for img in imgs:
-                        print("Added {0}, {1} image".format(
-                            img['name'], img['id']))
-                except Exception as e:
-                    print("Error {0} occurred while installing "
-                          "images for {1}".format(e, name))
-            try:
-                _handle_package_exists(
-                    mc, data, dep_package, args.exists_action)
-            except exceptions.CommandError:
-                raise
-            except Exception as e:
-                print("Error {0} occurred while "
-                      "installing package {1}".format(e, name))
-    do_package_list(mc)
+        try:
+            pkg = utils.Package.from_file(_file)
+        except Exception as e:
+            print("Failed to create package for '{0}', reason: {1}".format(
+                pkg, e))
+            continue
+        total_reqs.update(pkg.requirements(base_url=base_url))
+
+    no_images = getattr(args, 'no_images', False)
+
+    _handle_save_packages(total_reqs, dst, base_url, no_images)
 
 
 @utils.arg('id', metavar='<ID>',
-           help='Environment ID to show applications from')
+           help='Environment ID to show applications from.')
 @utils.arg('-p', '--path', metavar='<PATH>',
            help='Level of detalization to show. '
-                'Leave empty to browse all services in the environment',
+                'Leave empty to browse all applications in the environment.',
            default='/')
-def do_service_show(mc, args):
+def do_app_show(mc, args):
+    """List applications, added to specified environment.
+    """
     if args.path == '/':
-        services = mc.services.list(args.id)
+        apps = mc.services.list(args.id)
     else:
         if not args.path.startswith('/'):
             args.path = '/' + args.path
-            services = [mc.services.get(args.id, args.path)]
+            apps = [mc.services.get(args.id, args.path)]
 
     field_labels = ['Id', 'Name', 'Type']
     fields = ['id', 'name', 'type']
     formatters = {}
 
-    # If services is empty, first element exists and it's None
-    if hasattr(services[0], '?'):
+    # If app list is empty, first element exists and it's None
+    if hasattr(apps[0], '?'):
         formatters = {'id': lambda x: getattr(x, '?')['id'],
                       'type': lambda x: getattr(x, '?')['type']}
 
-    utils.print_list(services, fields, field_labels, formatters=formatters)
+    utils.print_list(apps, fields, field_labels, formatters=formatters)
 
 
 @utils.arg('-t', '--template', metavar='<HEAT_TEMPLATE>',
            help='Path to the Heat template to import as '
-                'an Application Definition')
+                'an Application Definition.')
 @utils.arg('-c', '--classes-dir', metavar='<CLASSES_DIRECTORY>',
-           help='Path to the directory containing application classes')
+           help='Path to the directory containing application classes.')
 @utils.arg('-r', '--resources-dir', metavar='<RESOURCES_DIRECTORY>',
-           help='Path to the directory containing application resources')
+           help='Path to the directory containing application resources.')
 @utils.arg('-n', '--name', metavar='<DISPLAY_NAME>',
-           help='Display name of the Application in Catalog')
+           help='Display name of the Application in Catalog.')
 @utils.arg('-f', '--full-name', metavar='<full-name>',
-           help='Fully-qualified name of the Application in Catalog')
-@utils.arg('-a', '--author', metavar='<AUTHOR>', help='Name of the publisher')
-@utils.arg('--tags', help='List of keywords connected to the application',
+           help='Fully-qualified name of the Application in Catalog.')
+@utils.arg('-a', '--author', metavar='<AUTHOR>', help='Name of the publisher.')
+@utils.arg('--tags', help='A list of keywords connected to the application.',
            metavar='<TAG1 TAG2>', nargs='*')
 @utils.arg('-d', '--description', metavar='<DESCRIPTION>',
-           help='Detailed description for the Application in Catalog')
+           help='Detailed description for the Application in Catalog.')
 @utils.arg('-o', '--output', metavar='<PACKAGE_NAME>',
-           help='The name of the output file archive to save locally')
+           help='The name of the output file archive to save locally.')
 @utils.arg('-u', '--ui', metavar='<UI_DEFINITION>',
-           help='Dynamic UI form definition')
+           help='Dynamic UI form definition.')
 @utils.arg('--type',
-           help='Package type. Possible values: Application or Library')
-@utils.arg('-l', '--logo', metavar='<LOGO>', help='Path to the package logo')
+           help='Package type. Possible values: Application or Library.')
+@utils.arg('-l', '--logo', metavar='<LOGO>', help='Path to the package logo.')
 def do_package_create(mc, args):
     """Create an application package."""
     if args.template and args.classes_dir:
@@ -518,7 +880,11 @@ def do_package_create(mc, args):
         else:
             directory_path = mpl_package.prepare_package(args)
 
-        archive_name = args.output or tempfile.mktemp(prefix="murano_")
+        if args.output:
+            archive_name = args.output
+        else:
+            archive_name = os.path.splitext(os.path.basename(args.template))[0]
+            archive_name += ".zip"
 
         _make_archive(archive_name, directory_path)
         print("Application package is available at " +
@@ -546,11 +912,10 @@ def do_category_list(mc, args={}):
 
 
 @utils.arg("id", metavar="<ID>",
-           help="Id of a category(s) to show")
+           help="ID of a category(s) to show.")
 def do_category_show(mc, args):
+    """Display category details."""
     category = mc.categories.get(args.id)
-    # field_labels = ["ID", "Name", "Packages Assigned"]
-    # fields = ["id", "name", "packages"]
     to_display = dict(id=category.id,
                       name=category.name,
                       packages=', '.join(p['name'] for p in category.packages))
@@ -559,7 +924,7 @@ def do_category_show(mc, args):
 
 
 @utils.arg("name", metavar="<CATEGORY_NAME>",
-           help="Category name")
+           help="Category name.")
 def do_category_create(mc, args):
     """Create a category."""
     mc.categories.add({"name": args.name})
@@ -567,7 +932,7 @@ def do_category_create(mc, args):
 
 
 @utils.arg("id", metavar="<ID>",
-           nargs="+", help="Id of a category(s) to delete")
+           nargs="+", help="ID of a category(ies) to delete.")
 def do_category_delete(mc, args):
     """Delete a category."""
     failure_count = 0

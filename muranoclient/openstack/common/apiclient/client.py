@@ -25,7 +25,6 @@ OpenStack Client interface. Handles the REST calls and responses.
 # E0202: An attribute inherited from %s hide this method
 # pylint: disable=E0202
 
-import logging
 import time
 
 try:
@@ -35,7 +34,8 @@ except ImportError:
 
 import requests
 
-from oslo.utils import importutils
+from oslo_log import log as logging
+from oslo_utils import importutils
 
 from muranoclient.openstack.common.apiclient import exceptions
 from muranoclient.openstack.common.gettextutils import _

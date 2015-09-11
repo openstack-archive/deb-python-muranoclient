@@ -15,30 +15,39 @@
 
 from __future__ import print_function
 
-import logging
+import collections
 import os
 import re
+import shutil
 import StringIO
 import sys
 import tempfile
 import textwrap
-import types
 import urlparse
 import uuid
 import warnings
 import zipfile
 
-from oslo.serialization import jsonutils
-from oslo.utils import encodeutils
-from oslo.utils import importutils
+from oslo_log import log as logging
+from oslo_serialization import jsonutils
+from oslo_utils import encodeutils
+from oslo_utils import importutils
 import prettytable
 import requests
 import six
 import yaml
 import yaql
-import yaql.exceptions
 
 from muranoclient.common import exceptions
+
+try:
+    import yaql.language  # noqa
+
+    from muranoclient.common.yaqlexpression import YaqlExpression
+except ImportError:
+    # no yaql.language means legacy yaql
+    from muranoclient.common.yaqlexpression_legacy import YaqlExpression
+
 
 LOG = logging.getLogger(__name__)
 
@@ -93,19 +102,19 @@ def print_dict(d, formatters={}):
     print(encodeutils.safe_encode(pt.get_string(sortby='Property')))
 
 
-def find_resource(manager, name_or_id):
+def find_resource(manager, name_or_id, *args, **kwargs):
     """Helper for the _find_* methods."""
     # first try to get entity as integer id
     try:
         if isinstance(name_or_id, int) or name_or_id.isdigit():
-            return manager.get(int(name_or_id))
+            return manager.get(int(name_or_id), *args, **kwargs)
     except exceptions.NotFound:
         pass
 
     # now try to get entity as uuid
     try:
         uuid.UUID(str(name_or_id))
-        return manager.get(name_or_id)
+        return manager.get(name_or_id, *args, **kwargs)
     except (ValueError, exceptions.NotFound):
         pass
 
@@ -243,6 +252,18 @@ class FileWrapperMixin(object):
         if self._file and not self._file.closed:
             self._file.close()
 
+    def save(self, dst):
+        file_name = self.file_wrapper.name
+
+        if urlparse.urlparse(file_name).scheme:
+            file_name = file_name.split('/')[-1]
+
+        dst = os.path.join(dst, file_name)
+
+        with open(dst, 'wb') as dst_file:
+            self._file.seek(0)
+            shutil.copyfileobj(self._file, dst_file)
+
     def __del__(self):
         self.close()
 
@@ -324,6 +345,37 @@ class Package(FileWrapperMixin):
         except Exception:
             return []
 
+    @property
+    def classes(self):
+        if not hasattr(self, '_classes'):
+            self._classes = {}
+            for class_name, class_file in six.iteritems(
+                    self.manifest.get('Classes', {})):
+                filename = "Classes/%s" % class_file
+                if filename not in self.contents.namelist():
+                    continue
+                klass = yaml.safe_load(self.contents.open(filename))
+                self._classes[class_name] = klass
+        return self._classes
+
+    @property
+    def ui(self):
+        if not hasattr(self, '_ui'):
+            if 'UI/ui.yaml' in self.contents.namelist():
+                self._ui = self.contents.open('UI/ui.yaml')
+            else:
+                self._ui = None
+        return self._ui
+
+    @property
+    def logo(self):
+        if not hasattr(self, '_logo'):
+            if 'logo.png' in self.contents.namelist():
+                self._logo = self.contents.open('logo.png')
+            else:
+                self._logo = None
+        return self._logo
+
     def requirements(self, base_url, path=None, dep_dict=None):
         """Recursively scan Require section of manifests of all the
         dependencies. Returns a dict with FQPNs as keys and respective
@@ -357,6 +409,35 @@ class Package(FileWrapperMixin):
         return dep_dict
 
 
+def save_image_local(image_spec, base_url, dst):
+    dst = os.path.join(dst, image_spec['Name'])
+
+    download_url = to_url(
+        image_spec.get("Url", image_spec['Name']),
+        base_url=base_url,
+        path='/images/'
+    )
+
+    with open(dst, "wb") as image_file:
+        response = requests.get(download_url, stream=True)
+        total_length = response.headers.get('content-length')
+
+        if total_length is None:
+            image_file.write(response.content)
+        else:
+            dl = 0
+            total_length = int(total_length)
+            for chunk in response.iter_content(1024 * 1024):
+                dl += len(chunk)
+                image_file.write(chunk)
+                done = int(50 * dl / total_length)
+                sys.stdout.write("\r[{0}{1}]".
+                                 format('=' * done, ' ' * (50 - done)))
+                sys.stdout.flush()
+            sys.stdout.write("\n")
+            image_file.flush()
+
+
 def ensure_images(glance_client, image_specs, base_url, local_path=None):
     """Ensure that images from image_specs are available in glance. If not
     attempts: instructs glance to download the images and sets murano-specific
@@ -370,7 +451,7 @@ def ensure_images(glance_client, image_specs, base_url, local_path=None):
                 return False
         return True
 
-    keys = ['Name', 'Hash', 'DiskFormat', 'ContainerFormat', ]
+    keys = ['Name', 'DiskFormat', 'ContainerFormat', ]
     installed_images = []
     for image_spec in image_specs:
         if not _image_valid(image_spec, keys):
@@ -380,13 +461,11 @@ def ensure_images(glance_client, image_specs, base_url, local_path=None):
             'disk_format': image_spec["DiskFormat"],
             'container_format': image_spec["ContainerFormat"],
         }
-        # NOTE(kzaitsev): glance v1 client does not allow checksum in
-        # a filter, so we have to filter ourselves
-        for img_obj in glance_client.images.list(filters=filters):
-            img = img_obj.to_dict()
-            if img['checksum'] == image_spec['Hash']:
-                break
-        else:
+
+        images = glance_client.images.list(filters=filters)
+        try:
+            img = images.next().to_dict()
+        except StopIteration:
             img = None
 
         update_metadata = False
@@ -508,38 +587,6 @@ class Bundle(FileWrapperMixin):
             yield pkg_obj
 
 
-class YaqlExpression(object):
-    def __init__(self, expression):
-        self._expression = str(expression)
-        self._parsed_expression = yaql.parse(self._expression)
-
-    def expression(self):
-        return self._expression
-
-    def __repr__(self):
-        return 'YAQL(%s)' % self._expression
-
-    def __str__(self):
-        return self._expression
-
-    @staticmethod
-    def match(expr):
-        if not isinstance(expr, types.StringTypes):
-            return False
-        if re.match('^[\s\w\d.:]*$', expr):
-            return False
-        try:
-            yaql.parse(expr)
-            return True
-        except yaql.exceptions.YaqlGrammarException:
-            return False
-        except yaql.exceptions.YaqlLexicalException:
-            return False
-
-    def evaluate(self, data=None, context=None):
-        return self._parsed_expression.evaluate(data=data, context=context)
-
-
 class YaqlYamlLoader(yaml.Loader):
     pass
 
@@ -556,3 +603,42 @@ def yaql_constructor(loader, node):
 
 yaml.add_constructor(u'!yaql', yaql_constructor, YaqlYamlLoader)
 yaml.add_implicit_resolver(u'!yaql', YaqlExpression, Loader=YaqlYamlLoader)
+
+
+def traverse_and_replace(obj,
+                         pattern=re.compile(r'^===id(\d+)===$'),
+                         replacements=None):
+    """Helper function that traverses object model and substitutes ids.
+
+    Recursively checks values of objects found in `obj` against `pattern`,
+    and replaces strings that match pattern with uuid.uuid4(). Keeps track of
+    any replacements already made, i.e. ===id1=== would always be the same,
+    across `obj`. Uses 1st group, found in the `pattern` regexp as unique
+    identifier of a replacement
+    """
+    if replacements is None:
+        replacements = collections.defaultdict(lambda: uuid.uuid4().hex)
+
+    def _maybe_replace(obj, key, value):
+        """Check and replace value against pattern"""
+        if isinstance(value, six.string_types):
+            m = pattern.search(value)
+            if m:
+                if m.group(1) not in replacements:
+                    replacements[m.group(1)] = uuid.uuid4().hex
+                obj[key] = replacements[m.group(1)]
+
+    if isinstance(obj, list):
+        for key, value in enumerate(obj):
+            if isinstance(value, (list, dict)):
+                traverse_and_replace(value, pattern, replacements)
+            else:
+                _maybe_replace(obj, key, value)
+    elif isinstance(obj, dict):
+        for key, value in obj.items():
+            if isinstance(value, (list, dict)):
+                traverse_and_replace(value, pattern, replacements)
+            else:
+                _maybe_replace(obj, key, value)
+    else:
+        _maybe_replace(obj, key, value)

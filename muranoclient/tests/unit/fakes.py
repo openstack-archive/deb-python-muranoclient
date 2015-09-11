@@ -11,10 +11,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from oslo.serialization import jsonutils
+from oslo_serialization import jsonutils
 
 
-class FakeHTTPResponse():
+class FakeHTTPResponse(object):
 
     version = 1.1
 
@@ -43,5 +43,5 @@ class FakeHTTPResponse():
         return jsonutils.loads(self.content)
 
 
-class FakeRaw():
+class FakeRaw(object):
     version = 110
