@@ -559,8 +559,6 @@ def do_package_import(mc, args):
                       "images for {1}".format(e, name))
         try:
             _handle_package_exists(mc, data, package, args.exists_action)
-        except exceptions.CommandError:
-            raise
         except Exception as e:
             print("Error {0} occurred while installing package {1}".format(
                 e, name))
