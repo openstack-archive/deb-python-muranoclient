@@ -1,6 +1,7 @@
 python-muranoclient (0.7.1-1) UNRELEASED; urgency=medium
 
   * New upstream release.
+  * d/control: Align dependencies with upstream.
 
  -- Corey Bryant <corey.bryant@canonical.com>  Mon, 05 Oct 2015 15:46:14 -0400
 
