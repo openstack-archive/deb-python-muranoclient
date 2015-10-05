@@ -1,3 +1,9 @@
+python-muranoclient (0.7.1-1) UNRELEASED; urgency=medium
+
+  * New upstream release.
+
+ -- Corey Bryant <corey.bryant@canonical.com>  Mon, 05 Oct 2015 15:46:14 -0400
+
 python-muranoclient (0.7.0-1) experimental; urgency=medium
 
   * New upstream release.
