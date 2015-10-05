@@ -540,7 +540,7 @@ class Bundle(FileWrapperMixin):
         return Bundle.from_file(file_obj)
 
     def package_specs(self):
-        """Returns a generator yeilding package specifications i.e.
+        """Returns a generator yielding package specifications i.e.
         dicts with 'Name' and 'Version' fields
         """
         self._file.seek(0)
@@ -601,8 +601,8 @@ def yaql_constructor(loader, node):
     value = loader.construct_scalar(node)
     return YaqlExpression(value)
 
-yaml.add_constructor(u'!yaql', yaql_constructor, YaqlYamlLoader)
-yaml.add_implicit_resolver(u'!yaql', YaqlExpression, Loader=YaqlYamlLoader)
+YaqlYamlLoader.add_constructor(u'!yaql', yaql_constructor)
+YaqlYamlLoader.add_implicit_resolver(u'!yaql', YaqlExpression, None)
 
 
 def traverse_and_replace(obj,
