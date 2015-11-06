@@ -1,0 +1,1062 @@
+Description: Add keystone v3 support to client
+ All clients should support keystone v3 till kilo. This patch adds
+ support for keystone sessions, keystone endpoint discovery and support
+ for the CLI to provide keystone v3 options.
+Author: Nikolay Starodubtsev <nstarodubtsev@mirantis.com>
+Date: Mon, 26 Oct 2015 11:56:14 +0000 (+0300)
+X-Git-Url: https://review.openstack.org/gitweb?p=openstack%2Fpython-muranoclient.git;a=commitdiff_plain;h=3c6088eaf299dfbea59f5aaff508890f9519150a
+Change-Id: I565927db7f393c0bae41ebf9c03488f9cd966e79
+Co-Authored-By: David Hu <david.hu@hp.com>
+Co-Authored-By: Steve McLellan <steven.j.mclellan@gmail.com>
+Closes-Bug: #1354129
+Closes-Bug: #1507932
+Implements: blueprint support-keystone-v3
+Origin: upstream, https://review.openstack.org/#/c/239413/
+
+Index: python-muranoclient/muranoclient/common/http.py
+===================================================================
+--- python-muranoclient.orig/muranoclient/common/http.py
++++ python-muranoclient/muranoclient/common/http.py
+@@ -17,6 +17,7 @@ import copy
+ import os
+ import socket
+ 
++import keystoneclient.adapter as keystone_adapter
+ from oslo_log import log as logging
+ from oslo_serialization import jsonutils
+ from oslo_utils import encodeutils
+@@ -288,3 +289,85 @@ class HTTPClient(object):
+ 
+     def patch(self, url, **kwargs):
+         return self.client_request("PATCH", url, **kwargs)
++
++
++class SessionClient(keystone_adapter.LegacyJsonAdapter):
++
++    def request(self, url, method, **kwargs):
++        raise_exc = kwargs.pop('raise_exc', True)
++        resp, body = super(SessionClient, self).request(url,
++                                                        method,
++                                                        raise_exc=False,
++                                                        **kwargs)
++
++        if raise_exc and resp.status_code >= 400:
++            LOG.warning(exc.from_response(resp))
++            raise exc.from_response(resp)
++
++        return resp, body
++
++    def json_request(self, method, url, **kwargs):
++        # Legacy adapter expects the payload in 'body', but
++        # will pass it to the non-legacy adapter in the
++        # 'json' spot so encoding happens later
++        if 'data' in kwargs:
++            if 'body' in kwargs:
++                raise ValueError("Can't provide both 'data' and "
++                                 "'body' to a request")
++            LOG.warning("Use of 'body' is deprecated; use 'data' instead")
++            kwargs['body'] = kwargs.pop('data')
++
++        # The argument order is different, beware
++        return self.request(url, method, **kwargs)
++
++    def json_patch_request(self, url, method='PATCH', **kwargs):
++        content_type = 'application/murano-packages-json-patch'
++        return self.json_request(
++            method, url, content_type=content_type, **kwargs)
++
++    def raw_request(self, method, url, **kwargs):
++        # A non-json request; instead of calling
++        # super.request, need to call the grandparent
++        # adapter.request
++        raise_exc = kwargs.pop('raise_exc', True)
++        if 'body' in kwargs:
++            if 'data' in kwargs:
++                raise ValueError("Can't provide both 'data' and "
++                                 "'body' to a request")
++            LOG.warning("Use of 'body' is deprecated; use 'data' instead")
++            kwargs['data'] = kwargs.pop('body')
++        resp = keystone_adapter.Adapter.request(self,
++                                                url,
++                                                method,
++                                                raise_exc=False,
++                                                **kwargs)
++        body = resp.text
++
++        if raise_exc and resp.status_code >= 400:
++            LOG.warning(exc.from_response(resp))
++            raise exc.from_response(resp)
++
++        return resp, body
++
++
++def _construct_http_client(*args, **kwargs):
++    session = kwargs.pop('session', None)
++    auth = kwargs.pop('auth', None)
++    endpoint = next(iter(args), None)
++
++    if session:
++        service_type = kwargs.pop('service_type', None)
++        endpoint_type = kwargs.pop('endpoint_type', None)
++        region_name = kwargs.pop('region_name', None)
++        service_name = kwargs.pop('service_name', None)
++        return SessionClient(endpoint_override=endpoint,
++                             session=session,
++                             auth=auth,
++                             interface=endpoint_type,
++                             service_type=service_type,
++                             region_name=region_name,
++                             service_name=service_name,
++                             user_agent='python-muranoclient',
++                             **kwargs)
++    else:
++        return HTTPClient(*args, **kwargs)
+Index: python-muranoclient/muranoclient/shell.py
+===================================================================
+--- python-muranoclient.orig/muranoclient/shell.py
++++ python-muranoclient/muranoclient/shell.py
+@@ -22,17 +22,22 @@ import argparse
+ import sys
+ 
+ import glanceclient
+-from keystoneclient.v2_0 import client as ksclient
++from keystoneclient.auth.identity.generic import password
++from keystoneclient.auth.identity.generic import token
++from keystoneclient.auth.identity import v3 as identity
++from keystoneclient import discover
++from keystoneclient.openstack.common.apiclient import exceptions as ks_exc
++from keystoneclient import session as ksession
+ from oslo_log import handlers
+ from oslo_log import log as logging
+ from oslo_utils import encodeutils
+ import six
++import six.moves.urllib.parse as urlparse
+ 
+ import muranoclient
+-from muranoclient import client as apiclient
++from muranoclient import client as murano_client
+ from muranoclient.common import utils
+ from muranoclient.openstack.common.apiclient import exceptions as exc
+-from muranoclient.openstack.common.gettextutils import _
+ 
+ 
+ logger = logging.getLogger(__name__)
+@@ -41,7 +46,15 @@ DEFAULT_REPO_URL = "http://apps.openstac
+ 
+ 
+ class MuranoShell(object):
++
++    def _append_global_identity_args(self, parser):
++        # Register the CLI arguments that have moved to the session object.
++        ksession.Session.register_cli_options(parser)
++
++        identity.Password.register_argparse_arguments(parser)
++
+     def get_base_parser(self):
++
+         parser = argparse.ArgumentParser(
+             prog='murano',
+             description=__doc__.strip(),
+@@ -70,53 +83,25 @@ class MuranoShell(object):
+                             default=False, action="store_true",
+                             help="Print more verbose output.")
+ 
+-        parser.add_argument('-k', '--insecure',
+-                            default=False,
+-                            action='store_true',
+-                            help="Explicitly allow muranoclient to perform "
+-                                 "\"insecure\" SSL (https) requests. "
+-                                 "The server's certificate will "
+-                                 "not be verified against any certificate "
+-                                 "authorities. This option should be used "
+-                                 "with caution.")
+-
+-        parser.add_argument('--os-cacert',
+-                            metavar='<ca-certificate>',
+-                            default=utils.env('OS_CACERT', default=None),
+-                            dest='os_cacert',
+-                            help='Specify a CA bundle file to use in '
+-                                 'verifying a TLS (https) server certificate. '
+-                                 'Defaults to env[OS_CACERT].')
+-
++        # os-cert, os-key, insecure, ca-file are all added
++        # by keystone session register_cli_opts later
+         parser.add_argument('--cert-file',
+-                            help='Path of certificate file to use in SSL '
+-                                 'connection. This file can optionally be '
+-                                 'prepended with the private key.')
++                            dest='os_cert',
++                            help='DEPRECATED! Use --os-cert.')
+ 
+         parser.add_argument('--key-file',
+-                            help='Path of client key to use '
+-                                 'in SSL connection. This option '
+-                                 'is not necessary if your key '
+-                                 'is prepended to your cert file.')
++                            dest='os_key',
++                            help='DEPRECATED! Use --os-key.')
+ 
+         parser.add_argument('--ca-file',
+                             dest='os_cacert',
+-                            help=_('DEPRECATED! Use %(arg)s.') %
+-                                 {'arg': '--os-cacert'})
++                            help='DEPRECATED! Use --os-cacert.')
+ 
+         parser.add_argument('--api-timeout',
+                             help='Number of seconds to wait for an '
+                                  'API response, '
+                                  'defaults to system socket timeout.')
+ 
+-        parser.add_argument('--os-username',
+-                            default=utils.env('OS_USERNAME'),
+-                            help='Defaults to env[OS_USERNAME].')
+-
+-        parser.add_argument('--os-password',
+-                            default=utils.env('OS_PASSWORD'),
+-                            help='Defaults to env[OS_PASSWORD].')
+-
+         parser.add_argument('--os-tenant-id',
+                             default=utils.env('OS_TENANT_ID'),
+                             help='Defaults to env[OS_TENANT_ID].')
+@@ -125,10 +110,6 @@ class MuranoShell(object):
+                             default=utils.env('OS_TENANT_NAME'),
+                             help='Defaults to env[OS_TENANT_NAME].')
+ 
+-        parser.add_argument('--os-auth-url',
+-                            default=utils.env('OS_AUTH_URL'),
+-                            help='Defaults to env[OS_AUTH_URL].')
+-
+         parser.add_argument('--os-region-name',
+                             default=utils.env('OS_REGION_NAME'),
+                             help='Defaults to env[OS_REGION_NAME].')
+@@ -142,7 +123,6 @@ class MuranoShell(object):
+                             action='store_true',
+                             help="Do not contact keystone for a token. "
+                                  "Defaults to env[OS_NO_CLIENT_AUTH].")
+-
+         parser.add_argument('--murano-url',
+                             default=utils.env('MURANO_URL'),
+                             help='Defaults to env[MURANO_URL].')
+@@ -177,6 +157,8 @@ class MuranoShell(object):
+                             help=('Defaults to env[MURANO_REPO_URL] '
+                                   'or {0}'.format(DEFAULT_REPO_URL)))
+ 
++        self._append_global_identity_args(parser)
++
+         return parser
+ 
+     def get_subcommand_parser(self, version):
+@@ -221,38 +203,82 @@ class MuranoShell(object):
+                 subparser.add_argument(*args, **kwargs)
+             subparser.set_defaults(func=callback)
+ 
+-    def _get_ksclient(self, **kwargs):
+-        """Get an endpoint and auth token from Keystone.
+-
+-        :param username: name of user
+-        :param password: user's password
+-        :param tenant_id: unique identifier of tenant
+-        :param tenant_name: name of tenant
+-        :param auth_url: endpoint to authenticate against
+-        """
+-        kc_args = {
+-            'auth_url': kwargs.get('auth_url'),
+-            'insecure': kwargs.get('insecure'),
+-            'cacert': kwargs.get('cacert')}
+-
+-        if kwargs.get('tenant_id'):
+-            kc_args['tenant_id'] = kwargs.get('tenant_id')
+-        else:
+-            kc_args['tenant_name'] = kwargs.get('tenant_name')
+-
+-        if kwargs.get('token'):
+-            kc_args['token'] = kwargs.get('token')
++    def _discover_auth_versions(self, session, auth_url):
++        # discover the API versions the server is supporting base on the
++        # given URL
++        v2_auth_url = None
++        v3_auth_url = None
++        try:
++            ks_discover = discover.Discover(session=session, auth_url=auth_url)
++            v2_auth_url = ks_discover.url_for('2.0')
++            v3_auth_url = ks_discover.url_for('3.0')
++        except ks_exc.ClientException as e:
++            # Identity service may not support discover API version.
++            # Lets trying to figure out the API version from the original URL.
++            url_parts = urlparse.urlparse(auth_url)
++            (scheme, netloc, path, params, query, fragment) = url_parts
++            path = path.lower()
++            if path.startswith('/v3'):
++                v3_auth_url = auth_url
++            elif path.startswith('/v2'):
++                v2_auth_url = auth_url
++            else:
++                # not enough information to determine the auth version
++                msg = ('Unable to determine the Keystone version '
++                       'to authenticate with using the given '
++                       'auth_url. Identity service may not support API '
++                       'version discovery. Please provide a versioned '
++                       'auth_url instead. error=%s') % (e)
++                raise exc.CommandError(msg)
++
++        return (v2_auth_url, v3_auth_url)
++
++    def _get_keystone_auth(self, session, auth_url, **kwargs):
++        auth_token = kwargs.pop('auth_token', None)
++        if auth_token:
++            return token.Token(auth_url, auth_token, **kwargs)
++
++        # NOTE(starodubcevna): this is a workaround for the bug:
++        # https://bugs.launchpad.net/python-openstackclient/+bug/1447704
++        # Change that fix this error in keystoneclient was abandoned,
++        # so we should use workaround until we move to keystoneauth.
++        # The idea of the code came from glanceclient.
++
++        (v2_auth_url, v3_auth_url) = self._discover_auth_versions(
++            session=session,
++            auth_url=auth_url)
++
++        if v3_auth_url:
++            # NOTE(starodubcevna): set user_domain_id and project_domain_id
++            # to default as it done in other projects.
++            return password.Password(auth_url,
++                                     username=kwargs.pop('username'),
++                                     user_id=kwargs.pop('user_id'),
++                                     password=kwargs.pop('password'),
++                                     user_domain_id=kwargs.pop(
++                                         'user_domain_id') or 'default',
++                                     user_domain_name=kwargs.pop(
++                                         'user_domain_name'),
++                                     project_id=kwargs.pop('project_id'),
++                                     project_name=kwargs.pop('project_name'),
++                                     project_domain_id=kwargs.pop(
++                                         'project_domain_id') or 'default')
++        elif v2_auth_url:
++            return password.Password(auth_url,
++                                     username=kwargs.pop('username'),
++                                     user_id=kwargs.pop('user_id'),
++                                     password=kwargs.pop('password'),
++                                     project_id=kwargs.pop('project_id'),
++                                     project_name=kwargs.pop('project_name'))
+         else:
+-            kc_args['username'] = kwargs.get('username')
+-            kc_args['password'] = kwargs.get('password')
+-
+-        return ksclient.Client(**kc_args)
+-
+-    def _get_endpoint(self, client, **kwargs):
+-        """Get an endpoint using the provided keystone client."""
+-        return client.service_catalog.url_for(
+-            service_type=kwargs.get('service_type') or 'application_catalog',
+-            endpoint_type=kwargs.get('endpoint_type') or 'publicURL')
++            # if we get here it means domain information is provided
++            # (caller meant to use Keystone V3) but the auth url is
++            # actually Keystone V2. Obviously we can't authenticate a V3
++            # user using V2.
++            exc.CommandError("Credential and auth_url mismatch. The given "
++                             "auth_url is using Keystone V2 endpoint, which "
++                             "may not able to handle Keystone V3 credentials. "
++                             "Please provide a correct Keystone V3 auth_url.")
+ 
+     def _setup_logging(self, debug):
+         # Output the logs to command-line interface
+@@ -278,6 +304,9 @@ class MuranoShell(object):
+         subcommand_parser = self.get_subcommand_parser(api_version)
+         self.parser = subcommand_parser
+ 
++        keystone_session = None
++        keystone_auth = None
++
+         # Handle top-level --help/-h before attempting to parse
+         # a command off the command line.
+         if (not args and options.help) or not argv:
+@@ -301,11 +330,14 @@ class MuranoShell(object):
+                                    " or a token via --os-auth-token or"
+                                    " env[OS_AUTH_TOKEN]")
+ 
+-        if not args.os_password and not args.os_auth_token:
+-            raise exc.CommandError("You must provide a password via"
+-                                   " either --os-password or env[OS_PASSWORD]"
+-                                   " or a token via --os-auth-token or"
+-                                   " env[OS_AUTH_TOKEN]")
++        if not any([args.os_tenant_name, args.os_tenant_id,
++                    args.os_project_id, args.os_project_name]):
++            raise exc.CommandError("You must provide a project name or"
++                                   " project id via --os-project-name,"
++                                   " --os-project-id, env[OS_PROJECT_ID]"
++                                   " or env[OS_PROJECT_NAME]. You may"
++                                   " use os-project and os-tenant"
++                                   " interchangeably.")
+ 
+         if args.os_no_client_auth:
+             if not args.murano_url:
+@@ -318,10 +350,14 @@ class MuranoShell(object):
+             # service catalog, it's not required if os_no_client_auth is
+             # specified, neither is the auth URL.
+             if not (args.os_tenant_id or args.os_tenant_name):
+-                raise exc.CommandError("You must provide a tenant name "
+-                                       "or tenant id via --os-tenant-name, "
+-                                       "--os-tenant-id, env[OS_TENANT_NAME] "
+-                                       "or env[OS_TENANT_ID]")
++                raise exc.CommandError(
++                    "You must provide a tenant name "
++                    "or tenant id via --os-tenant-name, "
++                    "--os-tenant-id, env[OS_TENANT_NAME] "
++                    "or env[OS_TENANT_ID] OR a project name "
++                    "or project id via --os-project-name, "
++                    "--os-project-id, env[OS_PROJECT_ID] or "
++                    "env[OS_PROJECT_NAME]")
+ 
+             if not args.os_auth_url:
+                 raise exc.CommandError("You must provide an auth url via"
+@@ -347,37 +383,70 @@ class MuranoShell(object):
+         endpoint = args.murano_url
+         glance_endpoint = args.glance_url
+ 
+-        if not args.os_no_client_auth:
+-            _ksclient = self._get_ksclient(**kwargs)
+-            token = args.os_auth_token or _ksclient.auth_token
+-
++        if args.os_no_client_auth:
++            # Authenticate through murano, don't use session
+             kwargs = {
+-                'token': token,
+-                'insecure': args.insecure,
+-                'cacert': args.os_cacert,
+-                'cert_file': args.cert_file,
+-                'key_file': args.key_file,
+                 'username': args.os_username,
+                 'password': args.os_password,
+-                'endpoint_type': args.os_endpoint_type,
+-                'include_pass': args.include_password
++                'auth_token': args.os_auth_token,
++                'auth_url': args.os_auth_url,
++                'token': args.os_auth_token,
++                'insecure': args.insecure,
++                'timeout': args.api_timeout
+             }
+             glance_kwargs = kwargs.copy()
+ 
+             if args.os_region_name:
+                 kwargs['region_name'] = args.os_region_name
+                 glance_kwargs['region_name'] = args.os_region_name
++        else:
++            # Create a keystone session and keystone auth
++            keystone_session = ksession.Session.load_from_cli_options(args)
++            project_id = args.os_project_id or args.os_tenant_id
++            project_name = args.os_project_name or args.os_tenant_name
++
++            keystone_session = ksession.Session.load_from_cli_options(args)
++
++            keystone_auth = self._get_keystone_auth(
++                keystone_session,
++                args.os_auth_url,
++                username=args.os_username,
++                user_id=args.os_user_id,
++                user_domain_id=args.os_user_domain_id,
++                user_domain_name=args.os_user_domain_name,
++                password=args.os_password,
++                auth_token=args.os_auth_token,
++                project_id=project_id,
++                project_name=project_name,
++                project_domain_id=args.os_project_domain_id,
++                project_domain_name=args.os_project_domain_name)
++
++            endpoint_type = args.os_endpoint_type or 'publicURL'
++            service_type = args.os_service_type or 'application_catalog'
+ 
+             if not endpoint:
+-                endpoint = self._get_endpoint(_ksclient, **kwargs)
++                endpoint = keystone_auth.get_endpoint(
++                    keystone_session,
++                    service_type=service_type,
++                    region_name=args.os_region_name)
++
++            kwargs = {
++                'session': keystone_session,
++                'auth': keystone_auth,
++                'service_type': service_type,
++                'endpoint_type': endpoint_type,
++                'region_name': args.os_region_name,
++            }
+ 
+         if args.api_timeout:
+             kwargs['timeout'] = args.api_timeout
+ 
+         if not glance_endpoint:
+             try:
+-                glance_endpoint = self._get_endpoint(
+-                    _ksclient, service_type='image')
++                glance_endpoint = keystone_auth.get_endpoint(
++                    keystone_session,
++                    service_type='image',
++                    region_name=args.os_region_name)
+             except Exception:
+                 pass
+ 
+@@ -395,7 +464,7 @@ class MuranoShell(object):
+                            "Image creation will be unavailable.")
+             kwargs['glance_client'] = None
+ 
+-        client = apiclient.Client(api_version, endpoint, **kwargs)
++        client = murano_client.Client(api_version, endpoint, **kwargs)
+ 
+         args.func(client, args)
+ 
+Index: python-muranoclient/muranoclient/tests/unit/test_shell.py
+===================================================================
+--- python-muranoclient.orig/muranoclient/tests/unit/test_shell.py
++++ python-muranoclient/muranoclient/tests/unit/test_shell.py
+@@ -24,6 +24,9 @@ import sys
+ import tempfile
+ 
+ import fixtures
++from keystoneclient import fixture
++from keystoneclient.fixture import v2 as ks_v2_fixture
++from keystoneclient.fixture import v3 as ks_v3_fixture
+ import mock
+ from oslo_log import handlers
+ from oslo_log import log
+@@ -48,12 +51,22 @@ FIXTURE_DIR = os.path.abspath(os.path.jo
+ FAKE_ENV = {'OS_USERNAME': 'username',
+             'OS_PASSWORD': 'password',
+             'OS_TENANT_NAME': 'tenant_name',
+-            'OS_AUTH_URL': 'http://no.where'}
++            'OS_AUTH_URL': 'http://no.where/v2.0'}
+ 
+ FAKE_ENV2 = {'OS_USERNAME': 'username',
+              'OS_PASSWORD': 'password',
+              'OS_TENANT_ID': 'tenant_id',
+-             'OS_AUTH_URL': 'http://no.where'}
++             'OS_AUTH_URL': 'http://no.where/v2.0'}
++
++FAKE_ENV_v3 = {'OS_USERNAME': 'username',
++               'OS_PASSWORD': 'password',
++               'OS_TENANT_ID': 'tenant_id',
++               'OS_USER_DOMAIN_NAME': 'domain_name',
++               'OS_AUTH_URL': 'http://no.where/v3'}
++
++
++def _create_ver_list(versions):
++    return {'versions': {'values': versions}}
+ 
+ 
+ class TestArgs(object):
+@@ -70,18 +83,24 @@ class ShellTest(base.TestCaseShell):
+         env = dict((k, v) for k, v in fake_env.items() if k != exclude)
+         self.useFixture(fixtures.MonkeyPatch('os.environ', env))
+ 
++
++class ShellCommandTest(ShellTest):
++
++    _msg_no_tenant_project = ('You must provide a project name or project'
++                              ' id via --os-project-name, --os-project-id,'
++                              ' env[OS_PROJECT_ID] or env[OS_PROJECT_NAME].'
++                              ' You may use os-project and os-tenant'
++                              ' interchangeably.',)
++
+     def setUp(self):
+-        super(ShellTest, self).setUp()
+-        self.useFixture(fixtures.MonkeyPatch(
+-            'keystoneclient.v2_0.client.Client', mock.MagicMock))
+-        self.client = mock.MagicMock()
++        super(ShellCommandTest, self).setUp()
+ 
+-        # We don't set an endpoint (client.service_catalog.url_for is a mock)
+-        # and get_proxy_url doesn't like that. We don't care about testing
+-        # that functionality, so mock it out.
++        def get_auth_endpoint(bound_self, args):
++            return ('test', {})
+         self.useFixture(fixtures.MonkeyPatch(
+-            'muranoclient.common.http.HTTPClient.get_proxy_url',
+-            mock.MagicMock))
++            'muranoclient.shell.MuranoShell._get_endpoint_and_kwargs',
++            get_auth_endpoint))
++        self.client = mock.MagicMock()
+ 
+         # To prevent log descriptors from being closed during
+         # shell tests set a custom StreamHandler
+@@ -114,6 +133,21 @@ class ShellTest(base.TestCaseShell):
+             sys.stderr = orig_stderr
+         return (stdout, stderr)
+ 
++    def register_keystone_discovery_fixture(self, mreq):
++        v2_url = "http://no.where/v2.0"
++        v2_version = fixture.V2Discovery(v2_url)
++        mreq.register_uri('GET', v2_url, json=_create_ver_list([v2_version]),
++                          status_code=200)
++
++    def register_keystone_token_fixture(self, mreq):
++        v2_token = ks_v2_fixture.Token(token_id='token')
++        service = v2_token.add_service('application_catalog')
++        service.add_endpoint('http://no.where', region='RegionOne')
++        mreq.register_uri('POST',
++                          'http://no.where/v2.0/tokens',
++                          json=v2_token,
++                          status_code=200)
++
+     def test_help_unknown_command(self):
+         self.assertRaises(exceptions.CommandError, self.shell, 'help foofoo')
+ 
+@@ -162,10 +196,7 @@ class ShellTest(base.TestCaseShell):
+             self.fail('CommandError not raised')
+ 
+     def test_no_tenant_name(self):
+-        required = ('You must provide a tenant name '
+-                    'or tenant id via --os-tenant-name, '
+-                    '--os-tenant-id, env[OS_TENANT_NAME] '
+-                    'or env[OS_TENANT_ID]',)
++        required = self._msg_no_tenant_project
+         self.make_env(exclude='OS_TENANT_NAME')
+         try:
+             self.shell('package-list')
+@@ -175,10 +206,7 @@ class ShellTest(base.TestCaseShell):
+             self.fail('CommandError not raised')
+ 
+     def test_no_tenant_id(self):
+-        required = ('You must provide a tenant name '
+-                    'or tenant id via --os-tenant-name, '
+-                    '--os-tenant-id, env[OS_TENANT_NAME] '
+-                    'or env[OS_TENANT_ID]',)
++        required = self._msg_no_tenant_project
+         self.make_env(exclude='OS_TENANT_ID', fake_env=FAKE_ENV2)
+         try:
+             self.shell('package-list')
+@@ -199,15 +227,19 @@ class ShellTest(base.TestCaseShell):
+             self.fail('CommandError not raised')
+ 
+     @mock.patch('muranoclient.v1.packages.PackageManager')
+-    def test_package_list(self, mock_package_manager):
++    @requests_mock.mock()
++    def test_package_list(self, mock_package_manager, m_requests):
+         self.client.packages = mock_package_manager()
+         self.make_env()
++        self.register_keystone_discovery_fixture(m_requests)
++        self.register_keystone_token_fixture(m_requests)
+         self.shell('package-list')
+         self.client.packages.filter.assert_called_once_with(
+             include_disabled=False)
+ 
+     @mock.patch('muranoclient.v1.packages.PackageManager')
+-    def test_package_show(self, mock_package_manager):
++    @requests_mock.mock()
++    def test_package_show(self, mock_package_manager, m_requests):
+         self.client.packages = mock_package_manager()
+         mock_package = mock.MagicMock()
+         mock_package.class_definitions = ''
+@@ -216,11 +248,14 @@ class ShellTest(base.TestCaseShell):
+         mock_package.description = ''
+         self.client.packages.get.return_value = mock_package
+         self.make_env()
++        self.register_keystone_discovery_fixture(m_requests)
++        self.register_keystone_token_fixture(m_requests)
+         self.shell('package-show 1234')
+         self.client.packages.get.assert_called_with('1234')
+ 
+     @mock.patch('muranoclient.v1.packages.PackageManager')
+-    def test_package_update(self, mock_package_manager):
++    @requests_mock.mock()
++    def test_package_update(self, mock_package_manager, m_requests):
+         self.client.packages = mock_package_manager()
+         mock_package = mock.MagicMock()
+         mock_package.class_definitions = ''
+@@ -230,6 +265,8 @@ class ShellTest(base.TestCaseShell):
+         self.client.packages.get.return_value = mock_package
+ 
+         self.make_env()
++        self.register_keystone_discovery_fixture(m_requests)
++        self.register_keystone_token_fixture(m_requests)
+ 
+         self.shell('package-update 123 --is-public true')
+         self.shell('package-update 123 --is-public false')
+@@ -256,26 +293,35 @@ class ShellTest(base.TestCaseShell):
+         ])
+ 
+     @mock.patch('muranoclient.v1.packages.PackageManager')
+-    def test_package_delete(self, mock_package_manager):
++    @requests_mock.mock()
++    def test_package_delete(self, mock_package_manager, m_requests):
+         self.client.packages = mock_package_manager()
+         self.make_env()
++        self.register_keystone_discovery_fixture(m_requests)
++        self.register_keystone_token_fixture(m_requests)
+         self.shell('package-delete 1234 4321')
+         self.client.packages.delete.assert_has_calls([
+             mock.call('1234'), mock.call('4321')])
+         self.assertEqual(2, self.client.packages.delete.call_count)
+ 
+     @mock.patch('muranoclient.v1.sessions.SessionManager')
+-    def test_environment_session_create(self, mock_manager):
++    @requests_mock.mock()
++    def test_environment_session_create(self, mock_manager, m_requests):
+         self.client.sessions = mock_manager()
+         self.make_env()
++        self.register_keystone_discovery_fixture(m_requests)
++        self.register_keystone_token_fixture(m_requests)
+         self.shell('environment-session-create 1234')
+         self.client.sessions.configure.assert_has_calls([
+             mock.call('1234')])
+ 
+     @mock.patch('muranoclient.v1.environments.EnvironmentManager')
+-    def test_environment_create(self, mock_manager):
++    @requests_mock.mock()
++    def test_environment_create(self, mock_manager, m_requests):
+         self.client.environments = mock_manager()
+         self.make_env()
++        self.register_keystone_discovery_fixture(m_requests)
++        self.register_keystone_token_fixture(m_requests)
+ 
+         self.shell('environment-create foo')
+         self.client.environments.create.assert_has_calls(
+@@ -296,9 +342,12 @@ class ShellTest(base.TestCaseShell):
+         self.assertEqual(expected_call, cc.call_args)
+ 
+     @mock.patch('muranoclient.v1.environments.EnvironmentManager')
+-    def test_environment_list(self, mock_manager):
++    @requests_mock.mock()
++    def test_environment_list(self, mock_manager, m_requests):
+         self.client.environments = mock_manager()
+         self.make_env()
++        self.register_keystone_discovery_fixture(m_requests)
++        self.register_keystone_token_fixture(m_requests)
+ 
+         self.shell('environment-list')
+         self.client.environments.list.assert_called_once_with(False)
+@@ -308,10 +357,13 @@ class ShellTest(base.TestCaseShell):
+         self.client.environments.list.assert_called_once_with(True)
+ 
+     @mock.patch('muranoclient.v1.environments.EnvironmentManager')
+-    def test_environment_delete(self, mock_manager):
++    @requests_mock.mock()
++    def test_environment_delete(self, mock_manager, m_requests):
+         self.client.environments = mock_manager()
+         self.client.environments.find.return_value.id = '123'
+         self.make_env()
++        self.register_keystone_discovery_fixture(m_requests)
++        self.register_keystone_token_fixture(m_requests)
+         self.shell('environment-delete env1')
+         self.client.environments.find.assert_has_calls([
+             mock.call(name='env1')
+@@ -321,10 +373,13 @@ class ShellTest(base.TestCaseShell):
+         ])
+ 
+     @mock.patch('muranoclient.v1.environments.EnvironmentManager')
+-    def test_environment_delete_with_abandon(self, mock_manager):
++    @requests_mock.mock()
++    def test_environment_delete_with_abandon(self, mock_manager, m_requests):
+         self.client.environments = mock_manager()
+         self.client.environments.find.return_value.id = '123'
+         self.make_env()
++        self.register_keystone_discovery_fixture(m_requests)
++        self.register_keystone_token_fixture(m_requests)
+         self.shell('environment-delete env1 --abandon')
+         self.client.environments.find.assert_has_calls([
+             mock.call(name='env1')
+@@ -334,94 +389,128 @@ class ShellTest(base.TestCaseShell):
+         ])
+ 
+     @mock.patch('muranoclient.v1.environments.EnvironmentManager')
+-    def test_environment_rename(self, mock_manager):
++    @requests_mock.mock()
++    def test_environment_rename(self, mock_manager, m_requests):
+         self.client.environments = mock_manager()
+         self.make_env()
++        self.register_keystone_discovery_fixture(m_requests)
++        self.register_keystone_token_fixture(m_requests)
+         self.shell('environment-rename old-name-or-id new-name')
+         self.client.environments.find.assert_called_once_with(
+             name='old-name-or-id')
+         self.assertEqual(1, self.client.environments.update.call_count)
+ 
+     @mock.patch('muranoclient.v1.environments.EnvironmentManager')
+-    def test_environment_show(self, mock_manager):
++    @requests_mock.mock()
++    def test_environment_show(self, mock_manager, m_requests):
+         self.client.environments = mock_manager()
+         self.make_env()
++        self.register_keystone_discovery_fixture(m_requests)
++        self.register_keystone_token_fixture(m_requests)
+         self.shell('environment-show env-id-or-name')
+         self.client.environments.find.assert_called_once_with(
+             name='env-id-or-name')
+ 
+     @mock.patch('muranoclient.v1.environments.EnvironmentManager')
+     @mock.patch('muranoclient.v1.sessions.SessionManager')
+-    def test_environment_deploy(self, mock_manager, env_manager):
++    @requests_mock.mock()
++    def test_environment_deploy(self, mock_manager, env_manager, m_requests):
+         self.client.sessions = mock_manager()
+         self.client.environments = env_manager()
+         self.make_env()
++        self.register_keystone_discovery_fixture(m_requests)
++        self.register_keystone_token_fixture(m_requests)
+         self.shell('environment-deploy 12345 --session-id 54321')
+         self.client.sessions.deploy.assert_called_once_with(
+             '12345', '54321')
+ 
+     @mock.patch('muranoclient.v1.environments.EnvironmentManager')
+-    def test_environment_show_session(self, mock_manager):
++    @requests_mock.mock()
++    def test_environment_show_session(self, mock_manager, m_requests):
+         self.client.environments = mock_manager()
+         self.make_env()
++        self.register_keystone_discovery_fixture(m_requests)
++        self.register_keystone_token_fixture(m_requests)
+         self.shell('environment-show 12345 --session-id 12345')
+         self.client.environments.get.assert_called_once_with(
+             12345, session_id='12345')
+ 
+     @mock.patch('muranoclient.v1.actions.ActionManager')
+-    def test_environment_action_call(self, mock_manager):
++    @requests_mock.mock()
++    def test_environment_action_call(self, mock_manager, m_requests):
+         self.client.actions = mock_manager()
+         self.make_env()
++        self.register_keystone_discovery_fixture(m_requests)
++        self.register_keystone_token_fixture(m_requests)
+         self.shell('environment-action-call 12345 --action-id 54321')
+         self.client.actions.call.assert_called_once_with(
+             '12345', '54321', arguments={})
+ 
+     @mock.patch('muranoclient.v1.actions.ActionManager')
+-    def test_environment_action_call_args(self, mock_manager):
++    @requests_mock.mock()
++    def test_environment_action_call_args(self, mock_manager, m_requests):
+         self.client.actions = mock_manager()
+         self.make_env()
++        self.register_keystone_discovery_fixture(m_requests)
++        self.register_keystone_token_fixture(m_requests)
+         self.shell('environment-action-call 12345 --action-id 54321 '
+                    '--arguments foo=bar')
+         self.client.actions.call.assert_called_once_with(
+             '12345', '54321', arguments={'foo': 'bar'})
+ 
+     @mock.patch('muranoclient.v1.actions.ActionManager')
+-    def test_environment_action_get_result(self, mock_manager):
++    @requests_mock.mock()
++    def test_environment_action_get_result(self, mock_manager, m_requests):
+         self.client.actions = mock_manager()
+         self.make_env()
++        self.register_keystone_discovery_fixture(m_requests)
++        self.register_keystone_token_fixture(m_requests)
+         self.shell('environment-action-get-result 12345 --task-id 54321')
+         self.client.actions.call.assert_called_once_with(
+             '12345', '54321')
+ 
+     @mock.patch('muranoclient.v1.templates.EnvTemplateManager')
+-    def test_env_template_delete(self, mock_manager):
++    @requests_mock.mock()
++    def test_env_template_delete(self, mock_manager, m_requests):
+         self.client.env_templates = mock_manager()
+         self.make_env()
++        self.register_keystone_discovery_fixture(m_requests)
++        self.register_keystone_token_fixture(m_requests)
+         self.shell('env-template-delete env1 env2')
+         self.client.env_templates.delete.assert_has_calls([
+             mock.call('env1'), mock.call('env2')])
+ 
+     @mock.patch('muranoclient.v1.templates.EnvTemplateManager')
+-    def test_env_template_create(self, mock_manager):
++    @requests_mock.mock()
++    def test_env_template_create(self, mock_manager, m_requests):
+         self.client.env_templates = mock_manager()
+         self.make_env()
++        self.register_keystone_discovery_fixture(m_requests)
++        self.register_keystone_token_fixture(m_requests)
+         self.shell('env-template-create env-name')
+         self.client.env_templates.create.assert_called_once_with(
+             {'name': 'env-name'})
+ 
+     @mock.patch('muranoclient.v1.templates.EnvTemplateManager')
+-    def test_env_template_show(self, mock_manager):
++    @requests_mock.mock()
++    def test_env_template_show(self, mock_manager, m_requests):
+         self.client.env_templates = mock_manager()
+         self.make_env()
++        self.register_keystone_discovery_fixture(m_requests)
++        self.register_keystone_token_fixture(m_requests)
+         self.shell('env-template-show env-id')
+         self.client.env_templates.get.assert_called_once_with('env-id')
+ 
+     @mock.patch('muranoclient.v1.environments.EnvironmentManager')
+     @mock.patch('muranoclient.v1.deployments.DeploymentManager')
+-    def test_deployments_show(self, mock_deployment_manager, mock_env_manager):
++    @requests_mock.mock()
++    def test_deployments_show(self, mock_deployment_manager, mock_env_manager,
++                              m_requests):
+         self.client.deployments = mock_deployment_manager()
+         self.client.environments = mock_env_manager()
+         self.make_env()
++        self.register_keystone_discovery_fixture(m_requests)
++        self.register_keystone_token_fixture(m_requests)
+         self.shell('deployment-list env-id-or-name')
+         self.client.environments.find.assert_called_once_with(
+             name='env-id-or-name')
+@@ -429,7 +518,9 @@ class ShellTest(base.TestCaseShell):
+ 
+     @mock.patch('muranoclient.v1.services.ServiceManager')
+     @mock.patch('muranoclient.v1.environments.EnvironmentManager')
+-    def test_environment_apps_edit(self, mock_env_manager, mock_services):
++    @requests_mock.mock()
++    def test_environment_apps_edit(self, mock_env_manager, mock_services,
++                                   m_requests):
+         self.client.environments = mock_env_manager()
+         self.client.services = mock_services()
+         fake = collections.namedtuple('fakeEnv', 'services')
+@@ -448,6 +539,8 @@ class ShellTest(base.TestCaseShell):
+         temp_file.file.flush()
+ 
+         self.make_env()
++        self.register_keystone_discovery_fixture(m_requests)
++        self.register_keystone_token_fixture(m_requests)
+ 
+         self.shell('environment-apps-edit 12345 {0} --session-id 4321'.format(
+             temp_file.name))
+@@ -460,13 +553,16 @@ class ShellTest(base.TestCaseShell):
+         )
+ 
+     @mock.patch('muranoclient.v1.services.ServiceManager')
+-    def test_app_show(self, mock_services):
++    @requests_mock.mock()
++    def test_app_show(self, mock_services, m_requests):
+         self.client.services = mock_services()
+         mock_app = mock.MagicMock()
+         mock_app.name = "app_name"
+         setattr(mock_app, '?', {'type': 'app_type', 'id': 'app_id'})
+         self.client.services.list.return_value = [mock_app]
+         self.make_env()
++        self.register_keystone_discovery_fixture(m_requests)
++        self.register_keystone_token_fixture(m_requests)
+         result = self.shell('app-show env-id')
+         required = ['Id', 'Name', 'Type', 'app_id', 'app_name', 'app_type']
+         for r in required:
+@@ -474,10 +570,13 @@ class ShellTest(base.TestCaseShell):
+         self.client.services.list.assert_called_once_with('env-id')
+ 
+     @mock.patch('muranoclient.v1.services.ServiceManager')
+-    def test_app_show_empty_list(self, mock_services):
++    @requests_mock.mock()
++    def test_app_show_empty_list(self, mock_services, m_requests):
+         self.client.services = mock_services()
+         self.client.services.list.return_value = []
+         self.make_env()
++        self.register_keystone_discovery_fixture(m_requests)
++        self.register_keystone_token_fixture(m_requests)
+         result = self.shell('app-show env-id')
+         required = ['Id', 'Name', 'Type']
+         for r in required:
+@@ -485,14 +584,16 @@ class ShellTest(base.TestCaseShell):
+         self.client.services.list.assert_called_once_with('env-id')
+ 
+ 
+-class ShellPackagesOperations(ShellTest):
+-
+-    def test_create_hot_based_package(self):
++class ShellPackagesOperations(ShellCommandTest):
++    @requests_mock.mock()
++    def test_create_hot_based_package(self, m_requests):
+         self.useFixture(fixtures.MonkeyPatch(
+             'muranoclient.v1.client.Client', mock.MagicMock))
+         heat_template = os.path.join(FIXTURE_DIR, 'heat-template.yaml')
+         logo = os.path.join(FIXTURE_DIR, 'logo.png')
+         self.make_env()
++        self.register_keystone_discovery_fixture(m_requests)
++        self.register_keystone_token_fixture(m_requests)
+         with tempfile.NamedTemporaryFile() as f:
+             RESULT_PACKAGE = f.name
+             c = "package-create --template={0} --output={1} -l={2}".format(
+@@ -502,13 +603,16 @@ class ShellPackagesOperations(ShellTest)
+                                   "Application package "
+                                   "is available at {0}".format(RESULT_PACKAGE))
+ 
+-    def test_create_mpl_package(self):
++    @requests_mock.mock()
++    def test_create_mpl_package(self, m_requests):
+         self.useFixture(fixtures.MonkeyPatch(
+             'muranoclient.v1.client.Client', mock.MagicMock))
+         classes_dir = os.path.join(FIXTURE_DIR, 'test-app', 'Classes')
+         resources_dir = os.path.join(FIXTURE_DIR, 'test-app', 'Resources')
+         ui = os.path.join(FIXTURE_DIR, 'test-app', 'ui.yaml')
+         self.make_env()
++        self.register_keystone_discovery_fixture(m_requests)
++        self.register_keystone_token_fixture(m_requests)
+         with tempfile.NamedTemporaryFile() as f:
+             RESULT_PACKAGE = f.name
+             stdout, stderr = self.shell(
+@@ -1000,3 +1104,27 @@ class ShellPackagesOperations(ShellTest)
+             os.remove(expected_pkgs[i].name)
+ 
+         shutil.rmtree(tmp_dir)
++
++
++class ShellPackagesOperationsV3(ShellPackagesOperations):
++    def make_env(self, exclude=None, fake_env=FAKE_ENV):
++        if 'OS_AUTH_URL' in fake_env:
++            fake_env.update({'OS_AUTH_URL': 'http://no.where/v3'})
++        env = dict((k, v) for k, v in fake_env.items() if k != exclude)
++        self.useFixture(fixtures.MonkeyPatch('os.environ', env))
++
++    def register_keystone_discovery_fixture(self, mreq):
++        v3_url = "http://no.where/v3"
++        v3_version = fixture.V3Discovery(v3_url)
++        mreq.register_uri('GET', v3_url, json=_create_ver_list([v3_version]),
++                          status_code=200)
++
++    def register_keystone_token_fixture(self, mreq):
++        v3_token = ks_v3_fixture.Token()
++        service = v3_token.add_service('application_catalog')
++        service.add_standard_endpoints(public='http://no.where')
++        mreq.register_uri('POST',
++                          'http://no.where/v3/auth/tokens',
++                          json=v3_token,
++                          headers={'X-Subject-Token': 'tokenid'},
++                          status_code=200)
+Index: python-muranoclient/muranoclient/v1/client.py
+===================================================================
+--- python-muranoclient.orig/muranoclient/v1/client.py
++++ python-muranoclient/muranoclient/v1/client.py
+@@ -26,7 +26,7 @@ from muranoclient.v1 import sessions
+ from muranoclient.v1 import templates
+ 
+ 
+-class Client(http.HTTPClient):
++class Client(object):
+     """Client for the Murano v1 API.
+ 
+     :param string endpoint: A user-supplied endpoint URL for the service.
+@@ -39,18 +39,18 @@ class Client(http.HTTPClient):
+         """Initialize a new client for the Murano v1 API."""
+         self.glance_client = kwargs.pop('glance_client', None)
+         tenant = kwargs.pop('tenant', None)
+-        super(Client, self).__init__(*args, **kwargs)
+-        self.environments = environments.EnvironmentManager(self)
+-        self.env_templates = templates.EnvTemplateManager(self)
+-        self.sessions = sessions.SessionManager(self)
+-        self.services = services.ServiceManager(self)
+-        self.deployments = deployments.DeploymentManager(self)
++        self.http_client = http._construct_http_client(*args, **kwargs)
++        self.environments = environments.EnvironmentManager(self.http_client)
++        self.env_templates = templates.EnvTemplateManager(self.http_client)
++        self.sessions = sessions.SessionManager(self.http_client)
++        self.services = services.ServiceManager(self.http_client)
++        self.deployments = deployments.DeploymentManager(self.http_client)
+         self.request_statistics = \
+-            request_statistics.RequestStatisticsManager(self)
++            request_statistics.RequestStatisticsManager(self.http_client)
+         self.instance_statistics = \
+-            instance_statistics.InstanceStatisticsManager(self)
++            instance_statistics.InstanceStatisticsManager(self.http_client)
+         artifacts_client = kwargs.pop('artifacts_client', None)
+-        pkg_mgr = packages.PackageManager(self)
++        pkg_mgr = packages.PackageManager(self.http_client)
+         if artifacts_client:
+             artifact_repo = artifact_packages.ArtifactRepo(artifacts_client,
+                                                            tenant)
+@@ -58,5 +58,5 @@ class Client(http.HTTPClient):
+                 pkg_mgr, artifact_repo)
+         else:
+             self.packages = pkg_mgr
+-        self.actions = actions.ActionManager(self)
+-        self.categories = categories.CategoryManager(self)
++        self.actions = actions.ActionManager(self.http_client)
++        self.categories = categories.CategoryManager(self.http_client)
