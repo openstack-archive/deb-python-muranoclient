@@ -2,6 +2,7 @@ python-muranoclient (0.8.0-1) experimental; urgency=medium
 
   * New upstream release.
   * Fixed (build-)depends for this release.
+  * Remove Add_keystone_v3_support_to_client.patch applied upstream.
 
  -- Thomas Goirand <zigo@debian.org>  Thu, 10 Dec 2015 22:33:50 +0100
 
