@@ -7,11 +7,13 @@ coverage>=3.6
 discover
 fixtures>=1.3.1
 mock>=1.2
-requests-mock>=0.6.0 # Apache-2.0
-tempest-lib>=0.8.0
+requests-mock>=0.7.0 # Apache-2.0
+tempest-lib>=0.10.0
 testrepository>=0.0.18
 testscenarios>=0.4
 testtools>=1.4.0
 
 # doc build requirements
+oslosphinx!=3.4.0,>=2.5.0 # Apache-2.0
 sphinx!=1.2.0,!=1.3b1,<1.3,>=1.1.2
+reno>=0.1.1 # Apache2

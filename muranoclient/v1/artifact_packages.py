@@ -153,7 +153,7 @@ class ArtifactRepo(object):
             new_props['keywords'] = new_keywords
         visibility = new_props.get('visibility')
         if visibility == 'public':
-            package = self.client.get(app_id)
+            package = self.client.artifacts.get(app_id)
             # NOTE(ativelkov): this is very racy, but until we have a chance to
             # enforce uniqueness right in glance this is the only way to do it
             existing = self.list(name=package.name,
@@ -219,6 +219,7 @@ class PackageManagerAdapter(object):
         search = kwargs.pop('search', None)
         category = kwargs.pop('category', None)
         fqn = kwargs.pop('fqn', None)
+        class_name = kwargs.pop('class_name', None)
         if category:
             kwargs['categories'] = category
         if search:
@@ -229,6 +230,8 @@ class PackageManagerAdapter(object):
             kwargs['enabled'] = True
         if fqn:
             kwargs['name'] = fqn
+        if class_name:
+            kwargs['class_definitions'] = class_name
 
         for pkg in self.glare.list(**kwargs):
             yield PackageWrapper(pkg)
@@ -267,7 +270,7 @@ class PackageManagerAdapter(object):
 
     @rewrap_http_exceptions
     def download(self, app_id):
-        return self.glare.download(app_id)
+        return "".join(self.glare.download(app_id))
 
     @rewrap_http_exceptions
     def get_logo(self, app_id):
@@ -317,6 +320,9 @@ class PackageWrapper(object):
             return self._item.type_specific_properties.get(name)
         else:
             return getattr(self._item, name)
+
+    def to_dict(self):
+        return {'id': self.id, 'name': self.name, 'owner_id': self.owner_id}
 
 
 class NamespaceResolver(object):

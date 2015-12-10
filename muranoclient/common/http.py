@@ -14,15 +14,17 @@
 #    under the License.
 
 import copy
+import hashlib
 import os
 import socket
 
+import keystoneclient.adapter as keystone_adapter
 from oslo_log import log as logging
 from oslo_serialization import jsonutils
 from oslo_utils import encodeutils
 import requests
 import six
-from six.moves.urllib import parse
+from six.moves import urllib
 
 from muranoclient.common import exceptions as exc
 
@@ -73,18 +75,28 @@ class HTTPClient(object):
         }
 
         self.verify_cert = None
-        if parse.urlparse(endpoint).scheme == "https":
+        if urllib.parse.urlparse(endpoint).scheme == "https":
             if kwargs.get('insecure'):
                 self.verify_cert = False
             else:
                 self.verify_cert = kwargs.get('cacert', get_system_ca_file())
 
+    def _safe_header(self, name, value):
+        if name in ['X-Auth-Token', 'X-Subject-Token']:
+            # because in python3 byte string handling is ... ug
+            v = value.encode('utf-8')
+            h = hashlib.sha1(v)
+            d = h.hexdigest()
+            return encodeutils.safe_decode(name), "{SHA1}%s" % d
+        else:
+            return (encodeutils.safe_decode(name),
+                    encodeutils.safe_decode(value))
+
     def log_curl_request(self, method, url, kwargs):
         curl = ['curl -i -X %s' % method]
 
         for (key, value) in kwargs['headers'].items():
-            header = '-H \'%s: %s\'' % (encodeutils.safe_decode(key),
-                                        encodeutils.safe_decode(value))
+            header = '-H \'%s: %s\'' % self._safe_header(key, value)
             curl.append(header)
 
         conn_params_fmt = [
@@ -288,3 +300,85 @@ class HTTPClient(object):
 
     def patch(self, url, **kwargs):
         return self.client_request("PATCH", url, **kwargs)
+
+
+class SessionClient(keystone_adapter.LegacyJsonAdapter):
+
+    def request(self, url, method, **kwargs):
+        raise_exc = kwargs.pop('raise_exc', True)
+        resp, body = super(SessionClient, self).request(url,
+                                                        method,
+                                                        raise_exc=False,
+                                                        **kwargs)
+
+        if raise_exc and resp.status_code >= 400:
+            LOG.warning(exc.from_response(resp))
+            raise exc.from_response(resp)
+
+        return resp, body
+
+    def json_request(self, method, url, **kwargs):
+        # Legacy adapter expects the payload in 'body', but
+        # will pass it to the non-legacy adapter in the
+        # 'json' spot so encoding happens later
+        if 'data' in kwargs:
+            if 'body' in kwargs:
+                raise ValueError("Can't provide both 'data' and "
+                                 "'body' to a request")
+            LOG.warning("Use of 'body' is deprecated; use 'data' instead")
+            kwargs['body'] = kwargs.pop('data')
+
+        # The argument order is different, beware
+        return self.request(url, method, **kwargs)
+
+    def json_patch_request(self, url, method='PATCH', **kwargs):
+        content_type = 'application/murano-packages-json-patch'
+        return self.json_request(
+            method, url, content_type=content_type, **kwargs)
+
+    def raw_request(self, method, url, **kwargs):
+        # A non-json request; instead of calling
+        # super.request, need to call the grandparent
+        # adapter.request
+        raise_exc = kwargs.pop('raise_exc', True)
+        if 'body' in kwargs:
+            if 'data' in kwargs:
+                raise ValueError("Can't provide both 'data' and "
+                                 "'body' to a request")
+            LOG.warning("Use of 'body' is deprecated; use 'data' instead")
+            kwargs['data'] = kwargs.pop('body')
+        resp = keystone_adapter.Adapter.request(self,
+                                                url,
+                                                method,
+                                                raise_exc=False,
+                                                **kwargs)
+        body = resp.text
+
+        if raise_exc and resp.status_code >= 400:
+            LOG.warning(exc.from_response(resp))
+            raise exc.from_response(resp)
+
+        return resp, body
+
+
+def _construct_http_client(*args, **kwargs):
+    session = kwargs.pop('session', None)
+    auth = kwargs.pop('auth', None)
+    endpoint = next(iter(args), None)
+
+    if session:
+        service_type = kwargs.pop('service_type', None)
+        endpoint_type = kwargs.pop('endpoint_type', None)
+        region_name = kwargs.pop('region_name', None)
+        service_name = kwargs.pop('service_name', None)
+        return SessionClient(endpoint_override=endpoint,
+                             session=session,
+                             auth=auth,
+                             interface=endpoint_type,
+                             service_type=service_type,
+                             region_name=region_name,
+                             service_name=service_name,
+                             user_agent='python-muranoclient',
+                             **kwargs)
+    else:
+        return HTTPClient(*args, **kwargs)

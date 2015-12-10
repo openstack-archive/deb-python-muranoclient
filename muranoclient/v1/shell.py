@@ -16,7 +16,10 @@ import functools
 import json
 import os
 import shutil
+import six
+import six.moves
 import sys
+import tempfile
 import uuid
 import zipfile
 
@@ -31,6 +34,8 @@ from muranoclient.v1.package_creator import mpl_package
 
 _bool_from_str_strict = functools.partial(
     strutils.bool_from_string, strict=True)
+
+DEFAULT_PAGE_SIZE = 20
 
 
 @utils.arg('--all-tenants', action='store_true', default=False,
@@ -201,7 +206,9 @@ def do_environment_session_create(mc, args):
     """Creates a new configuration session for environment ID."""
     environment_id = args.id
     session_id = mc.sessions.configure(environment_id).id
-    print("Created new session: {0}".format(session_id))
+    print("Created new session:")
+    formatters = {"id": utils.text_wrap_formatter}
+    utils.print_dict({"id": session_id}, formatters=formatters)
 
 
 @utils.arg("id", metavar="<ID>", help="ID of Environment to edit.")
@@ -272,11 +279,30 @@ def do_env_template_create(mc, args):
 
 @utils.arg("id", metavar="<ID>",
            help="Environment template ID.")
+@utils.arg("name", metavar="<ENV_TEMPLATE_NAME>",
+           help="New environment name.")
+def do_env_template_create_env(mc, args):
+    """Create a new environment from template."""
+    try:
+        template = mc.env_templates.create_env(args.id, args.name)
+    except common_exceptions.HTTPNotFound:
+        raise exceptions.CommandError("Environment template %s not found"
+                                      % args.id)
+    else:
+        formatters = {
+            "environment_id": utils.text_wrap_formatter,
+            "session_id": utils.text_wrap_formatter
+        }
+        utils.print_dict(template.to_dict(), formatters=formatters)
+
+
+@utils.arg("id", metavar="<ID>",
+           help="Environment template ID.")
 def do_env_template_show(mc, args):
     """Display environment template details."""
     try:
         env_template = mc.env_templates.get(args.id)
-    except exceptions.NotFound:
+    except common_exceptions.HTTPNotFound:
         raise exceptions.CommandError("Environment template %s not found"
                                       % args.id)
     else:
@@ -331,7 +357,7 @@ def do_env_template_delete(mc, args):
     for env_template_id in args.id:
         try:
             mc.env_templates.delete(env_template_id)
-        except exceptions.NotFound:
+        except common_exceptions.HTTPNotFound:
             failure_count += 1
             mns = "Failed to delete '{0}'; environment template not found".\
                 format(env_template_id)
@@ -356,15 +382,18 @@ def do_deployment_list(mc, args):
         utils.print_list(deployments, fields, field_labels, sortby=0)
 
 
+@utils.arg("--limit", type=int, default=DEFAULT_PAGE_SIZE)
 @utils.arg("--include-disabled", default=False, action="store_true")
 def do_package_list(mc, args={}):
     """List available packages."""
     filter_args = {
         "include_disabled": getattr(args, 'include_disabled', False),
+        "limit": getattr(args, 'limit', DEFAULT_PAGE_SIZE),
     }
     packages = mc.packages.filter(**filter_args)
-    field_labels = ["ID", "Name", "FQN", "Author", "Is Public"]
-    fields = ["id", "name", "fully_qualified_name", "author", "is_public"]
+    field_labels = ["ID", "Name", "FQN", "Author", "Active", "Is Public"]
+    fields = ["id", "name", "fully_qualified_name", "author",
+              "enabled", "is_public"]
     utils.print_list(packages, fields, field_labels, sortby=0)
 
 
@@ -391,7 +420,7 @@ def do_package_download(mc, args):
                    'downloaded package. Please specify a local file to save '
                    'downloaded package or redirect output to another source.')
             raise exceptions.CommandError(msg)
-    except exceptions.NotFound:
+    except common_exceptions.HTTPNotFound:
         raise exceptions.CommandError("Package %s not found" % args.id)
 
 
@@ -401,7 +430,7 @@ def do_package_show(mc, args):
     """Display details for a package."""
     try:
         package = mc.packages.get(args.id)
-    except exceptions.NotFound:
+    except common_exceptions.HTTPNotFound:
         raise exceptions.CommandError("Package %s not found" % args.id)
     else:
         to_display = dict(
@@ -462,7 +491,7 @@ def _handle_package_exists(mc, data, package, exists_action):
             if not res:
                 while True:
                     print("What do you want to do? (s)kip, (u)pdate, (a)bort")
-                    res = raw_input()
+                    res = six.moves.input()
                     if res in allowed_results:
                         break
             if res == 's':
@@ -548,7 +577,7 @@ def do_package_import(mc, args):
         should_do_list = True
         total_reqs.update(package.requirements(base_url=args.murano_repo_url))
 
-    for name, package in total_reqs.iteritems():
+    for name, package in six.iteritems(total_reqs):
         image_specs = package.images()
         if image_specs:
             print("Inspecting required images")
@@ -556,7 +585,8 @@ def do_package_import(mc, args):
                 imgs = utils.ensure_images(
                     glance_client=mc.glance_client,
                     image_specs=image_specs,
-                    base_url=args.murano_repo_url)
+                    base_url=args.murano_repo_url,
+                    is_package_public=args.is_public)
                 for img in imgs:
                     print("Added {0}, {1} image".format(
                         img['name'], img['id']))
@@ -626,7 +656,7 @@ def do_bundle_import(mc, args):
             _file = utils.to_url(
                 filename,
                 base_url=args.murano_repo_url,
-                path='/bundles/',
+                path='bundles/',
                 extension='.bundle',
             )
 
@@ -649,7 +679,7 @@ def do_bundle_import(mc, args):
             )
             total_reqs.update(requirements)
 
-    for name, dep_package in total_reqs.iteritems():
+    for name, dep_package in six.iteritems(total_reqs):
         image_specs = dep_package.images()
         if image_specs:
             print("Inspecting required images")
@@ -658,7 +688,8 @@ def do_bundle_import(mc, args):
                     glance_client=mc.glance_client,
                     image_specs=image_specs,
                     base_url=args.murano_repo_url,
-                    local_path=local_path)
+                    local_path=local_path,
+                    is_package_public=args.is_public)
                 for img in imgs:
                     print("Added {0}, {1} image".format(
                         img['name'], img['id']))
@@ -680,7 +711,7 @@ def do_bundle_import(mc, args):
 def _handle_save_packages(packages, dst, base_url, no_images):
     downloaded_images = []
 
-    for name, pkg in packages.iteritems():
+    for name, pkg in six.iteritems(packages):
         if not no_images:
             image_specs = pkg.images()
             for image_spec in image_specs:
@@ -739,7 +770,7 @@ def do_bundle_save(mc, args):
         _file = utils.to_url(
             bundle,
             base_url=base_url,
-            path='/bundles/',
+            path='bundles/',
             extension='.bundle',
         )
     try:
@@ -757,7 +788,7 @@ def do_bundle_save(mc, args):
     _handle_save_packages(total_reqs, dst, base_url, no_images)
 
     try:
-        bundle_file.save(dst)
+        bundle_file.save(dst, binary=False)
         print("Bundle file {0} has been successfully saved".format(bundle))
     except Exception as e:
         print("Error {0} occurred while saving bundle {1}".format(e, bundle))
@@ -807,7 +838,7 @@ def do_package_save(mc, args):
             pkg = utils.Package.from_file(_file)
         except Exception as e:
             print("Failed to create package for '{0}', reason: {1}".format(
-                pkg, e))
+                package, e))
             continue
         total_reqs.update(pkg.requirements(base_url=base_url))
 
@@ -827,22 +858,25 @@ def do_app_show(mc, args):
     """
     if args.path == '/':
         apps = mc.services.list(args.id)
+        formatters = {'id': lambda x: getattr(x, '?')['id'],
+                      'type': lambda x: getattr(x, '?')['type']}
+        field_labels = ['Id', 'Name', 'Type']
+        fields = ['id', 'name', 'type']
+        utils.print_list(apps, fields, field_labels, formatters=formatters)
     else:
         if not args.path.startswith('/'):
             args.path = '/' + args.path
-        apps = [mc.services.get(args.id, args.path)]
+        app = mc.services.get(args.id, args.path)
 
-    field_labels = ['Id', 'Name', 'Type']
-    fields = ['id', 'name', 'type']
-    formatters = {}
-
-    # If app with specified path is not found, first element exists
-    # and it's None.
-    if apps and hasattr(apps[0], '?'):
-        formatters = {'id': lambda x: getattr(x, '?')['id'],
-                      'type': lambda x: getattr(x, '?')['type']}
-
-    utils.print_list(apps, fields, field_labels, formatters=formatters)
+        # If app with specified path is not found, it is empty.
+        if hasattr(app, '?'):
+            formatters = {}
+            for key in app.to_dict().keys():
+                formatters[key] = utils.json_formatter
+            utils.print_dict(app.to_dict(), formatters)
+        else:
+            raise exceptions.CommandError("Could not find application at path"
+                                          " %s" % args.path)
 
 
 @utils.arg('-t', '--template', metavar='<HEAT_TEMPLATE>',
@@ -877,19 +911,20 @@ def do_package_create(mc, args):
     if not args.template and not args.classes_dir:
         raise exceptions.CommandError(
             "Provide --template for a HOT-based package, OR at least"
-            "--classes-dir for a MuranoPL-based package")
+            " --classes-dir for a MuranoPL-based package")
     directory_path = None
     try:
+        archive_name = args.output if args.output else None
         if args.template:
             directory_path = hot_package.prepare_package(args)
+            if not archive_name:
+                archive_name = os.path.basename(args.template)
+                archive_name = os.path.splitext(archive_name)[0] + ".zip"
         else:
             directory_path = mpl_package.prepare_package(args)
-
-        if args.output:
-            archive_name = args.output
-        else:
-            archive_name = os.path.splitext(os.path.basename(args.template))[0]
-            archive_name += ".zip"
+            if not archive_name:
+                archive_name = tempfile.mkstemp(
+                    prefix="murano_", dir=os.getcwd())[1] + ".zip"
 
         _make_archive(archive_name, directory_path)
         print("Application package is available at " +
@@ -944,7 +979,7 @@ def do_category_delete(mc, args):
     for category_id in args.id:
         try:
             mc.categories.delete(category_id)
-        except exceptions.NotFound:
+        except common_exceptions.HTTPNotFound:
             failure_count += 1
             print("Failed to delete '{0}'; category not found".
                   format(category_id))
