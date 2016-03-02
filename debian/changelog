@@ -5,6 +5,7 @@ python-muranoclient (0.8.2-1) UNRELEASED; urgency=medium
 
   [ Corey Bryant ]
   * New upstream release.
+  * Align (Build-Depends) with upstream.
 
  -- Corey Bryant <corey.bryant@canonical.com>  Wed, 02 Mar 2016 09:52:26 -0500
 
