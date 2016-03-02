@@ -26,7 +26,7 @@ from keystoneclient.auth.identity.generic import password
 from keystoneclient.auth.identity.generic import token
 from keystoneclient.auth.identity import v3 as identity
 from keystoneclient import discover
-from keystoneclient.openstack.common.apiclient import exceptions as ks_exc
+from keystoneclient import exceptions as ks_exc
 from keystoneclient import session as ksession
 from oslo_log import handlers
 from oslo_log import log as logging
@@ -37,8 +37,8 @@ import six.moves.urllib.parse as urlparse
 import muranoclient
 from muranoclient import client as murano_client
 from muranoclient.common import utils
+from muranoclient.glance import client as art_client
 from muranoclient.openstack.common.apiclient import exceptions as exc
-
 
 logger = logging.getLogger(__name__)
 
@@ -67,7 +67,7 @@ class MuranoShell(object):
         # Global arguments
         parser.add_argument('-h', '--help',
                             action='store_true',
-                            help=argparse.SUPPRESS,)
+                            help=argparse.SUPPRESS, )
 
         parser.add_argument('--version',
                             action='version',
@@ -157,6 +157,16 @@ class MuranoShell(object):
                             help=('Defaults to env[MURANO_REPO_URL] '
                                   'or {0}'.format(DEFAULT_REPO_URL)))
 
+        parser.add_argument('--murano-packages-service',
+                            choices=['murano', 'glance'],
+                            default=utils.env('MURANO_PACKAGES_SERVICE',
+                                              default='murano'),
+                            help='Specifies if murano-api ("murano") or '
+                                 'Glance Artifact Repository ("glance") '
+                                 'should be used to store murano packages. '
+                                 'Defaults to env[MURANO_PACKAGES_SERVICE] or '
+                                 'to "murano"')
+
         self._append_global_identity_args(parser)
 
         return parser
@@ -236,7 +246,13 @@ class MuranoShell(object):
     def _get_keystone_auth(self, session, auth_url, **kwargs):
         auth_token = kwargs.pop('auth_token', None)
         if auth_token:
-            return token.Token(auth_url, auth_token, **kwargs)
+            return token.Token(
+                auth_url,
+                auth_token,
+                project_id=kwargs.pop('project_id'),
+                project_name=kwargs.pop('project_name'),
+                project_domain_id=kwargs.pop('project_domain_id'),
+                project_domain_name=kwargs.pop('project_domain_name'))
 
         # NOTE(starodubcevna): this is a workaround for the bug:
         # https://bugs.launchpad.net/python-openstackclient/+bug/1447704
@@ -289,9 +305,9 @@ class MuranoShell(object):
 
         # Set the logger level of special library
         logging.getLogger('iso8601') \
-               .logger.setLevel(logging.WARNING)
+            .logger.setLevel(logging.WARNING)
         logging.getLogger('urllib3.connectionpool') \
-               .logger.setLevel(logging.WARNING)
+            .logger.setLevel(logging.WARNING)
 
     def main(self, argv):
         # Parse args once to find version
@@ -330,55 +346,36 @@ class MuranoShell(object):
                                    " or a token via --os-auth-token or"
                                    " env[OS_AUTH_TOKEN]")
 
-        if not any([args.os_tenant_name, args.os_tenant_id,
-                    args.os_project_id, args.os_project_name]):
-            raise exc.CommandError("You must provide a project name or"
-                                   " project id via --os-project-name,"
-                                   " --os-project-id, env[OS_PROJECT_ID]"
-                                   " or env[OS_PROJECT_NAME]. You may"
-                                   " use os-project and os-tenant"
-                                   " interchangeably.")
-
         if args.os_no_client_auth:
             if not args.murano_url:
                 raise exc.CommandError(
                     "If you specify --os-no-client-auth"
                     " you must also specify a Murano API URL"
                     " via either --murano-url or env[MURANO_URL]")
+            if (not args.glance_url and
+                    args.murano_packages_service == 'glance'):
+                raise exc.CommandError(
+                    "If you specify --os-no-client-auth and"
+                    " set murano-packages-service to 'glance'"
+                    " you must also specify a Glance API URL"
+                    " via either --glance-url or env[GLANCE_URL]")
+
         else:
             # Tenant name or ID is needed to make keystoneclient retrieve a
             # service catalog, it's not required if os_no_client_auth is
             # specified, neither is the auth URL.
-            if not (args.os_tenant_id or args.os_tenant_name):
-                raise exc.CommandError(
-                    "You must provide a tenant name "
-                    "or tenant id via --os-tenant-name, "
-                    "--os-tenant-id, env[OS_TENANT_NAME] "
-                    "or env[OS_TENANT_ID] OR a project name "
-                    "or project id via --os-project-name, "
-                    "--os-project-id, env[OS_PROJECT_ID] or "
-                    "env[OS_PROJECT_NAME]")
-
+            if not any([args.os_tenant_name, args.os_tenant_id,
+                        args.os_project_id, args.os_project_name]):
+                raise exc.CommandError("You must provide a project name or"
+                                       " project id via --os-project-name,"
+                                       " --os-project-id, env[OS_PROJECT_ID]"
+                                       " or env[OS_PROJECT_NAME]. You may"
+                                       " use os-project and os-tenant"
+                                       " interchangeably.")
             if not args.os_auth_url:
                 raise exc.CommandError("You must provide an auth url via"
                                        " either --os-auth-url or via"
                                        " env[OS_AUTH_URL]")
-
-        kwargs = {
-            'username': args.os_username,
-            'password': args.os_password,
-            'token': args.os_auth_token,
-            'tenant_id': args.os_tenant_id,
-            'tenant_name': args.os_tenant_name,
-            'auth_url': args.os_auth_url,
-            'service_type': args.os_service_type,
-            'endpoint_type': args.os_endpoint_type,
-            'insecure': args.insecure,
-            'cacert': args.os_cacert,
-            'include_pass': args.include_password
-        }
-        glance_kwargs = kwargs
-        glance_kwargs = kwargs.copy()
 
         endpoint = args.murano_url
         glance_endpoint = args.glance_url
@@ -404,8 +401,6 @@ class MuranoShell(object):
             keystone_session = ksession.Session.load_from_cli_options(args)
             project_id = args.os_project_id or args.os_tenant_id
             project_name = args.os_project_name or args.os_tenant_name
-
-            keystone_session = ksession.Session.load_from_cli_options(args)
 
             keystone_auth = self._get_keystone_auth(
                 keystone_session,
@@ -466,6 +461,16 @@ class MuranoShell(object):
                            "Image creation will be unavailable.")
             kwargs['glance_client'] = None
 
+        if args.murano_packages_service == 'glance':
+            artifacts_client = art_client.Client(endpoint=glance_endpoint,
+                                                 type_name='murano',
+                                                 type_version=1,
+                                                 username=args.os_username,
+                                                 password=args.os_password,
+                                                 token=args.os_auth_token,
+                                                 insecure=args.insecure)
+            kwargs['artifacts_client'] = artifacts_client
+
         client = murano_client.Client(api_version, endpoint, **kwargs)
 
         args.func(client, args)
@@ -505,9 +510,7 @@ class HelpFormatter(argparse.HelpFormatter):
         super(HelpFormatter, self).start_section(heading)
 
 
-def main(args=None):
-    if args is None:
-        args = sys.argv[1:]
+def main(args=sys.argv[1:]):
     try:
         MuranoShell().main(args)
 

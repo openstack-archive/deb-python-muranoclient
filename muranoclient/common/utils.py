@@ -16,6 +16,7 @@
 from __future__ import print_function
 
 import collections
+import json
 import os
 import re
 import shutil
@@ -26,7 +27,6 @@ import uuid
 import warnings
 import zipfile
 
-import json
 from oslo_log import log as logging
 from oslo_serialization import jsonutils
 from oslo_utils import encodeutils
@@ -39,7 +39,7 @@ import yaml
 import yaql
 
 from muranoclient.common import exceptions
-from muranoclient.openstack.common.gettextutils import _
+from muranoclient.i18n import _
 
 try:
     import yaql.language  # noqa
@@ -75,7 +75,9 @@ def pretty_choice_list(l):
     return ', '.join("'%s'" % i for i in l)
 
 
-def print_list(objs, fields, field_labels, formatters={}, sortby=0):
+def print_list(objs, fields, field_labels, formatters=None, sortby=0):
+    if formatters is None:
+        formatters = {}
     pt = prettytable.PrettyTable([f for f in field_labels], caching=False)
     pt.align = 'l'
 
@@ -91,7 +93,9 @@ def print_list(objs, fields, field_labels, formatters={}, sortby=0):
     print(encodeutils.safe_encode(pt.get_string()))
 
 
-def print_dict(d, formatters={}):
+def print_dict(d, formatters=None):
+    if formatters is None:
+        formatters = {}
     pt = prettytable.PrettyTable(['Property', 'Value'], caching=False)
     pt.align = 'l'
 
@@ -400,7 +404,7 @@ class Package(FileWrapperMixin):
                         base_url=base_url,
                     )
                 except Exception as e:
-                    LOG.error("Error {0} occured while parsing package {1}, "
+                    LOG.error("Error {0} occurred while parsing package {1}, "
                               "required by {2} package".format(
                                   e, dep_name,
                                   self.manifest['FullName']))
@@ -470,7 +474,7 @@ def ensure_images(glance_client, image_specs, base_url,
 
         images = glance_client.images.list(filters=filters)
         try:
-            img = images.next().to_dict()
+            img = next(images).to_dict()
         except StopIteration:
             img = None
 
@@ -525,7 +529,7 @@ def ensure_images(glance_client, image_specs, base_url,
                     glance_client.images.update(img['id'], is_public=True)
                     LOG.debug('Success update for image {0}'.format(img['id']))
                 except Exception as e:
-                    LOG.exception(_("Error {0} occured while setting "
+                    LOG.exception(_("Error {0} occurred while setting "
                                     "image {1} public").format(e, img['id']))
 
             installed_images.append(img)
@@ -598,7 +602,7 @@ class Bundle(FileWrapperMixin):
                 )
 
             except Exception as e:
-                LOG.error("Error {0} occured while obtaining "
+                LOG.error("Error {0} occurred while obtaining "
                           "package {1}".format(e, package['Name']))
                 continue
             yield pkg_obj

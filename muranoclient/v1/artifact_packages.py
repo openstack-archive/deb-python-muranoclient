@@ -12,10 +12,9 @@
 # License for the specific language governing permissions and limitations
 # under the License.
 
+from glanceclient import exc as glance_exc
 import six
 import yaml
-
-from glanceclient import exc as glance_exc
 
 from muranoclient.common import exceptions as exc
 from muranoclient.common import utils
@@ -71,7 +70,7 @@ class ArtifactRepo(object):
         existing = self.list(name=package_draft['name'],
                              version=package_draft['version'], **filters)
         try:
-            existing.next()
+            next(existing)
             raise exc.HTTPConflict("Package already exists")
         except StopIteration:
             pass
@@ -161,7 +160,7 @@ class ArtifactRepo(object):
                                  visibility='public')
             try:
                 while True:
-                    package = existing.next()
+                    package = next(existing)
                     if package.id == app_id:
                         continue
                     else:
@@ -207,13 +206,17 @@ class PackageManagerAdapter(object):
 
     @rewrap_http_exceptions
     def create(self, data, files):
-        fqn = files.keys()[0]
+        is_public = data.pop('is_public', None)
+        if is_public is not None:
+            data['visibility'] = 'public' if is_public else 'private'
+        fqn = list(files.keys())[0]
         pkg = self.glare.create(fqn, files[fqn], **data)
         return PackageWrapper(pkg)
 
     @rewrap_http_exceptions
     def filter(self, **kwargs):
         kwargs.pop('catalog', None)  # NOTE(ativelkov): Glare ignores 'catalog'
+        kwargs.pop('owned', None)  # NOTE(ativelkov): Glare ignores 'owned'
         include_disabled = kwargs.pop('include_disabled', False)
         order_by = kwargs.pop('order_by', None)
         search = kwargs.pop('search', None)

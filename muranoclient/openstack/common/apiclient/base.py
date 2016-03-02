@@ -31,8 +31,8 @@ from oslo_utils import uuidutils
 import six
 from six.moves.urllib import parse
 
+from muranoclient.i18n import _
 from muranoclient.openstack.common.apiclient import exceptions
-from muranoclient.openstack.common.gettextutils import _
 
 
 def getid(obj):
@@ -511,8 +511,6 @@ class Resource(object):
         # two resources of different types are not equal
         if not isinstance(other, self.__class__):
             return False
-        if hasattr(self, 'id') and hasattr(other, 'id'):
-            return self.id == other.id
         return self._info == other._info
 
     def is_loaded(self):

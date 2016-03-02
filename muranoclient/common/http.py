@@ -48,7 +48,7 @@ def get_system_ca_file():
         if os.path.exists(ca):
             LOG.debug("Using ca file %s", ca)
             return ca
-    LOG.warn("System ca file could not be found.")
+    LOG.warning("System ca file could not be found.")
 
 
 class HTTPClient(object):
@@ -302,34 +302,52 @@ class HTTPClient(object):
         return self.client_request("PATCH", url, **kwargs)
 
 
-class SessionClient(keystone_adapter.LegacyJsonAdapter):
+class SessionClient(keystone_adapter.Adapter):
+    """Murano specific keystoneclient Adapter.
+
+    Murano can't use keystoneclient LegacyJsonAdapter, because murano has the
+    check for right content-type for "update" operation which is
+    'application/murano-packages-json-patch'. So, we need to create our own
+    adapter.
+    """
 
     def request(self, url, method, **kwargs):
         raise_exc = kwargs.pop('raise_exc', True)
-        resp, body = super(SessionClient, self).request(url,
-                                                        method,
-                                                        raise_exc=False,
-                                                        **kwargs)
+        resp = super(SessionClient, self).request(url,
+                                                  method,
+                                                  raise_exc=False,
+                                                  **kwargs)
 
         if raise_exc and resp.status_code >= 400:
-            LOG.warning(exc.from_response(resp))
+            LOG.trace("Error communicating with {url}: {exc}"
+                      .format(url=url, exc=exc.from_response(resp)))
             raise exc.from_response(resp)
 
-        return resp, body
+        return resp, resp.text
 
     def json_request(self, method, url, **kwargs):
-        # Legacy adapter expects the payload in 'body', but
-        # will pass it to the non-legacy adapter in the
-        # 'json' spot so encoding happens later
-        if 'data' in kwargs:
-            if 'body' in kwargs:
+        headers = kwargs.setdefault('headers', {})
+        headers['Content-Type'] = kwargs.pop('content_type',
+                                             'application/json')
+        if 'body' in kwargs:
+            if 'data' in kwargs:
                 raise ValueError("Can't provide both 'data' and "
                                  "'body' to a request")
             LOG.warning("Use of 'body' is deprecated; use 'data' instead")
-            kwargs['body'] = kwargs.pop('data')
+            kwargs['data'] = kwargs.pop('body')
+        if 'data' in kwargs:
+            kwargs['data'] = jsonutils.dumps(kwargs['data'])
+            # NOTE(starodubcevna): We need to prove that json field is empty,
+            # or it will be modified by keystone adapter.
+            kwargs['json'] = None
 
-        # The argument order is different, beware
-        return self.request(url, method, **kwargs)
+        resp, body = self.request(url, method, **kwargs)
+        if body:
+            try:
+                body = jsonutils.loads(body)
+            except ValueError:
+                pass
+        return resp, body
 
     def json_patch_request(self, url, method='PATCH', **kwargs):
         content_type = 'application/murano-packages-json-patch'
@@ -352,13 +370,13 @@ class SessionClient(keystone_adapter.LegacyJsonAdapter):
                                                 method,
                                                 raise_exc=False,
                                                 **kwargs)
-        body = resp.text
 
         if raise_exc and resp.status_code >= 400:
-            LOG.warning(exc.from_response(resp))
+            LOG.trace("Error communicating with {url}: {exc}"
+                      .format(url=url, exc=exc.from_response(resp)))
             raise exc.from_response(resp)
 
-        return resp, body
+        return resp
 
 
 def _construct_http_client(*args, **kwargs):
@@ -371,14 +389,17 @@ def _construct_http_client(*args, **kwargs):
         endpoint_type = kwargs.pop('endpoint_type', None)
         region_name = kwargs.pop('region_name', None)
         service_name = kwargs.pop('service_name', None)
-        return SessionClient(endpoint_override=endpoint,
-                             session=session,
-                             auth=auth,
-                             interface=endpoint_type,
-                             service_type=service_type,
-                             region_name=region_name,
-                             service_name=service_name,
-                             user_agent='python-muranoclient',
-                             **kwargs)
+        parameters = {
+            'endpoint_override': endpoint,
+            'session': session,
+            'auth': auth,
+            'interface': endpoint_type,
+            'service_type': service_type,
+            'region_name': region_name,
+            'service_name': service_name,
+            'user_agent': 'python-muranoclient',
+        }
+        parameters.update(kwargs)
+        return SessionClient(**parameters)
     else:
         return HTTPClient(*args, **kwargs)

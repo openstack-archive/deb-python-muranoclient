@@ -12,10 +12,9 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+from oslo_serialization import jsonutils
 import six
 from six.moves import urllib
-
-from oslo_serialization import jsonutils
 import yaml
 
 from muranoclient.common import base
@@ -121,7 +120,7 @@ class PackageManager(base.Manager):
         """
         url = '/v1/catalog/packages/{0}'.format(app_id)
         data = []
-        for key, value in body.iteritems():
+        for key, value in six.iteritems(body):
             data.append({'op': operation, 'path': '/' + key, 'value': value})
         return self.api.json_patch_request(url, data=data)
 

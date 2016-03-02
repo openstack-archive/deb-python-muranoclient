@@ -69,7 +69,7 @@ def _create_ver_list(versions):
 
 
 class TestArgs(object):
-    version = ''
+    package_version = ''
     murano_repo_url = 'http://127.0.0.1'
     exists_action = ''
     is_public = False
@@ -235,7 +235,8 @@ class ShellCommandTest(ShellTest):
         self.shell('package-list')
         self.client.packages.filter.assert_called_once_with(
             include_disabled=False,
-            limit=20)
+            limit=20,
+            owned=False)
 
     @mock.patch('muranoclient.v1.packages.PackageManager')
     @requests_mock.mock()
@@ -247,7 +248,36 @@ class ShellCommandTest(ShellTest):
         self.shell('package-list --limit 10')
         self.client.packages.filter.assert_called_once_with(
             include_disabled=False,
-            limit=10)
+            limit=10,
+            owned=False)
+
+    @mock.patch('muranoclient.v1.packages.PackageManager')
+    @requests_mock.mock()
+    def test_package_list_with_name(self, mock_package_manager, m_requests):
+        self.client.packages = mock_package_manager()
+        self.make_env()
+        self.register_keystone_discovery_fixture(m_requests)
+        self.register_keystone_token_fixture(m_requests)
+        self.shell('package-list --name mysql')
+        self.client.packages.filter.assert_called_once_with(
+            name='mysql',
+            include_disabled=False,
+            owned=False,
+            limit=20)
+
+    @mock.patch('muranoclient.v1.packages.PackageManager')
+    @requests_mock.mock()
+    def test_package_list_with_fqn(self, mock_package_manager, m_requests):
+        self.client.packages = mock_package_manager()
+        self.make_env()
+        self.register_keystone_discovery_fixture(m_requests)
+        self.register_keystone_token_fixture(m_requests)
+        self.shell('package-list --fqn mysql')
+        self.client.packages.filter.assert_called_once_with(
+            fqn='mysql',
+            include_disabled=False,
+            owned=False,
+            limit=20)
 
     @mock.patch('muranoclient.v1.packages.PackageManager')
     @requests_mock.mock()
@@ -338,20 +368,24 @@ class ShellCommandTest(ShellTest):
 
         self.shell('environment-create foo')
         self.client.environments.create.assert_has_calls(
-            [mock.call({'name': 'foo'})])
+            [mock.call({'name': 'foo', 'region': None})])
         self.client.environments.create.reset_mock()
-        self.shell('environment-create --join-net 123 foo')
+        self.shell('environment-create --join-net 123 foo --region RegionOne')
         cc = self.client.environments.create
-        expected_call = mock.call(
-            {'defaultNetworks':
-                {'environment':
-                    {'internalNetworkName': '123',
-                        '?':
-                        {'type': 'io.murano.resources.ExistingNeutronNetwork',
-                            'id': mock.ANY}},
-                    'flat': None},
-             'name': 'foo',
-             })
+        expected_call = mock.call({
+            'defaultNetworks': {
+                'environment': {
+                    'internalNetworkName': '123',
+                    '?': {
+                        'type': 'io.murano.resources.ExistingNeutronNetwork',
+                        'id': mock.ANY
+                    }
+                },
+                'flat': None
+            },
+            'name': 'foo',
+            'region': 'RegionOne'
+        })
         self.assertEqual(expected_call, cc.call_args)
 
     @mock.patch('muranoclient.v1.environments.EnvironmentManager')
@@ -479,7 +513,7 @@ class ShellCommandTest(ShellTest):
         self.register_keystone_discovery_fixture(m_requests)
         self.register_keystone_token_fixture(m_requests)
         self.shell('environment-action-get-result 12345 --task-id 54321')
-        self.client.actions.call.assert_called_once_with(
+        self.client.actions.get_result.assert_called_once_with(
             '12345', '54321')
 
     @mock.patch('muranoclient.v1.templates.EnvTemplateManager')
@@ -502,7 +536,18 @@ class ShellCommandTest(ShellTest):
         self.register_keystone_token_fixture(m_requests)
         self.shell('env-template-create env-name')
         self.client.env_templates.create.assert_called_once_with(
-            {'name': 'env-name'})
+            {'name': 'env-name', 'is_public': False})
+
+    @mock.patch('muranoclient.v1.templates.EnvTemplateManager')
+    @requests_mock.mock()
+    def test_env_template_create_public(self, mock_manager, m_requests):
+        self.client.env_templates = mock_manager()
+        self.make_env()
+        self.register_keystone_discovery_fixture(m_requests)
+        self.register_keystone_token_fixture(m_requests)
+        self.shell('env-template-create --is-public env-name')
+        self.client.env_templates.create.assert_called_once_with(
+            {'name': 'env-name', 'is_public': True})
 
     @mock.patch('muranoclient.v1.templates.EnvTemplateManager')
     @requests_mock.mock()
@@ -524,6 +569,17 @@ class ShellCommandTest(ShellTest):
         self.shell('env-template-create-env env-id env-name')
         self.client.env_templates.create_env.\
             assert_called_once_with('env-id', 'env-name')
+
+    @mock.patch('muranoclient.v1.templates.EnvTemplateManager')
+    @requests_mock.mock()
+    def test_env_template_clone(self, mock_manager, m_requests):
+        self.client.env_templates = mock_manager()
+        self.make_env()
+        self.register_keystone_discovery_fixture(m_requests)
+        self.register_keystone_token_fixture(m_requests)
+        self.shell('env-template-clone env-id env-name')
+        self.client.env_templates.clone.assert_called_once_with(
+            'env-id', 'env-name')
 
     @mock.patch('muranoclient.v1.environments.EnvironmentManager')
     @mock.patch('muranoclient.v1.deployments.DeploymentManager')

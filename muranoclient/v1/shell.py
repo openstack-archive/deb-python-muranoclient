@@ -16,8 +16,6 @@ import functools
 import json
 import os
 import shutil
-import six
-import six.moves
 import sys
 import tempfile
 import uuid
@@ -25,6 +23,8 @@ import zipfile
 
 import jsonpatch
 from oslo_utils import strutils
+import six
+import six.moves
 
 from muranoclient.common import exceptions as common_exceptions
 from muranoclient.common import utils
@@ -41,12 +41,18 @@ DEFAULT_PAGE_SIZE = 20
 @utils.arg('--all-tenants', action='store_true', default=False,
            help='Allows to list environments from all tenants'
                 ' (admin only).')
-def do_environment_list(mc, args={}):
+def do_environment_list(mc, args=None):
     """List the environments."""
+    if args is None:
+        args = {}
     all_tenants = getattr(args, 'all_tenants', False)
     environments = mc.environments.list(all_tenants)
-    field_labels = ['ID', 'Name', 'Created', 'Updated']
-    fields = ['id', 'name', 'created', 'updated']
+    _print_environment_list(environments)
+
+
+def _print_environment_list(environments):
+    field_labels = ['ID', 'Name', 'Status', 'Created', 'Updated']
+    fields = ['id', 'name', 'status', 'created', 'updated']
     utils.print_list(environments, fields, field_labels, sortby=0)
 
 
@@ -74,16 +80,18 @@ def _generate_join_existing_net(net, subnet):
            help="Network id to join.",)
 @utils.arg("--join-subnet-id", metavar="<SUBNET_ID>",
            help="Subnetwork id to join.",)
+@utils.arg("--region", metavar="<REGION_NAME>",
+           help="Name of the target OpenStack region.",)
 @utils.arg("name", metavar="<ENVIRONMENT_NAME>",
            help="Environment name.")
 def do_environment_create(mc, args):
     """Create an environment."""
-    body = {"name": args.name}
+    body = {"name": args.name, "region": args.region}
     if args.join_net_id or args.join_subnet_id:
         body.update(_generate_join_existing_net(
             args.join_net_id, args.join_subnet_id))
-    mc.environments.create(body)
-    do_environment_list(mc)
+    environment = mc.environments.create(body)
+    _print_environment_list([environment])
 
 
 @utils.arg("id", metavar="<NAME or ID>",
@@ -117,11 +125,11 @@ def do_environment_rename(mc, args):
     """Rename an environment."""
     try:
         environment = utils.find_resource(mc.environments, args.id)
-        mc.environments.update(environment.id, args.name)
+        environment = mc.environments.update(environment.id, args.name)
     except exceptions.NotFound:
         raise exceptions.CommandError("Environment %s not found" % args.id)
     else:
-        do_environment_list(mc)
+        _print_environment_list([environment])
 
 
 @utils.arg("id", metavar="<NAME or ID>",
@@ -197,7 +205,7 @@ def do_environment_action_call(mc, args):
            help="ID of action to run.")
 def do_environment_action_get_result(mc, args):
     """Get result of `TASK` in environment `ID`."""
-    result = mc.actions.call(args.id, args.task_id)
+    result = mc.actions.get_result(args.id, args.task_id)
     print("Task id result: {0}".format(result))
 
 
@@ -261,20 +269,29 @@ def do_environment_apps_edit(mc, args):
         session_id=session_id)
 
 
-def do_env_template_list(mc, args={}):
+def do_env_template_list(mc, args=None):
     """List the environments templates."""
+    if args is None:
+        args = {}
     env_templates = mc.env_templates.list()
-    field_labels = ['ID', 'Name', 'Created', 'Updated']
-    fields = ['id', 'name', 'created', 'updated']
+    _print_env_template_list(env_templates)
+
+
+def _print_env_template_list(env_templates):
+    field_labels = ['ID', 'Name', 'Created', 'Updated', 'Is public']
+    fields = ['id', 'name', 'created', 'updated', 'is_public']
     utils.print_list(env_templates, fields, field_labels, sortby=0)
 
 
 @utils.arg("name", metavar="<ENV_TEMPLATE_NAME>",
            help="Environment template name.")
+@utils.arg("--is-public", action='store_true', default=False,
+           help='Make the template available for users from other tenants.')
 def do_env_template_create(mc, args):
     """Create an environment template."""
-    mc.env_templates.create({"name": args.name})
-    do_env_template_list(mc)
+    env_template = mc.env_templates.create(
+        {"name": args.name, "is_public": args.is_public})
+    _print_env_template_list([env_template])
 
 
 @utils.arg("id", metavar="<ID>",
@@ -317,16 +334,16 @@ def do_env_template_show(mc, args):
         utils.print_dict(env_template.to_dict(), formatters=formatters)
 
 
-@utils.arg("name", metavar="<ENV_TEMPLATE_NAME>",
-           help="Environment template name.")
+@utils.arg("id", metavar="<ENV_TEMPLATE_ID>",
+           help="Environment template ID.")
 @utils.arg('app_template_file', metavar='<FILE>',
            help='Path to the template.')
 def do_env_template_add_app(mc, args):
     """Add application to the environment template."""
-    with open(args.app_template_file, "r") as myfile:
-        app_file = myfile.readlines()
-    mc.env_templates.create_app(args.name, app_file)
-    do_env_template_list(mc)
+    with open(args.app_template_file, "r") as app_file:
+        app_template = json.load(app_file)
+    mc.env_templates.create_app(args.id, app_template)
+    do_env_template_show(mc, args)
 
 
 @utils.arg("id", metavar="<ENV_TEMPLATE_ID>",
@@ -335,8 +352,8 @@ def do_env_template_add_app(mc, args):
            help="Application ID.")
 def do_env_template_del_app(mc, args):
     """Delete application from the environment template."""
-    mc.env_templates.delete_app(args.name, args.app_id)
-    do_env_template_list(mc)
+    mc.env_templates.delete_app(args.id, args.app_id)
+    do_env_template_show(mc, args)
 
 
 @utils.arg("id", metavar="<ID>",
@@ -345,8 +362,8 @@ def do_env_template_del_app(mc, args):
            help="Environment template name.")
 def do_env_template_update(mc, args):
     """Update an environment template."""
-    mc.env_templates.update(args.id, args.name)
-    do_env_template_list(mc)
+    env_template = mc.env_templates.update(args.id, args.name)
+    _print_env_template_list([env_template])
 
 
 @utils.arg("id", metavar="<ID>",
@@ -368,6 +385,32 @@ def do_env_template_delete(mc, args):
 
 
 @utils.arg("id", metavar="<ID>",
+           help="Environment template ID.")
+@utils.arg("name", metavar="<ENV_TEMPLATE_NAME>",
+           help="New environment template name.")
+def do_env_template_clone(mc, args):
+    """Create a new template, cloned from template."""
+    try:
+        env_template = mc.env_templates.clone(args.id, args.name)
+    except common_exceptions.HTTPNotFound:
+        raise exceptions.CommandError("Environment template %s not found"
+                                      % args.id)
+    else:
+        formatters = {
+            "id": utils.text_wrap_formatter,
+            "created": utils.text_wrap_formatter,
+            "updated": utils.text_wrap_formatter,
+            "version": utils.text_wrap_formatter,
+            "name": utils.text_wrap_formatter,
+            "tenant_id": utils.text_wrap_formatter,
+            "is_public": utils.text_wrap_formatter,
+            "services": utils.json_formatter,
+
+        }
+        utils.print_dict(env_template.to_dict(), formatters=formatters)
+
+
+@utils.arg("id", metavar="<ID>",
            help="Environment ID for which to list deployments.")
 def do_deployment_list(mc, args):
     """List deployments for an environment."""
@@ -384,16 +427,63 @@ def do_deployment_list(mc, args):
 
 @utils.arg("--limit", type=int, default=DEFAULT_PAGE_SIZE)
 @utils.arg("--include-disabled", default=False, action="store_true")
-def do_package_list(mc, args={}):
+@utils.arg("--owned", default=False, action="store_true")
+@utils.arg('--search', metavar='<SEARCH_KEYS>',
+           dest='search', required=False,
+           help='Show packages, that match search keys fuzzily')
+@utils.arg('--name', metavar='<PACKAGE_NAME>',
+           dest='name', required=False,
+           help='Show packages, whose name match parameter exactly')
+@utils.arg('--fqn', metavar="<PACKAGE_FULLY_QUALIFIED_NAME>",
+           dest='fqn', required=False,
+           help='Show packages, '
+                'whose fully qualified name match parameter exactly')
+@utils.arg('--type', metavar='<PACKAGE_TYPE>',
+           dest='type', required=False,
+           help='Show packages, whose type match parameter exactly')
+@utils.arg('--category', metavar='<PACKAGE_CATEGORY>',
+           dest='category', required=False,
+           help='Show packages, whose categories include parameter')
+@utils.arg('--class_name', metavar='<PACKAGE_CLASS_NAME>',
+           dest='class_name', required=False,
+           help='Show packages, whose class name match parameter exactly')
+@utils.arg('--tag', metavar='<PACKAGE_TAG>',
+           dest='tag', required=False,
+           help='Show packages, whose tags include parameter')
+def do_package_list(mc, args=None):
     """List available packages."""
+    if args is None:
+        args = {}
     filter_args = {
         "include_disabled": getattr(args, 'include_disabled', False),
         "limit": getattr(args, 'limit', DEFAULT_PAGE_SIZE),
+        "owned": getattr(args, 'owned', False),
     }
+    if args:
+        if args.search:
+            filter_args['search'] = args.search
+        if args.name:
+            filter_args['name'] = args.name
+        if args.fqn:
+            filter_args['fqn'] = args.fqn
+        if args.type:
+            filter_args['type'] = args.type
+        if args.category:
+            filter_args['category'] = args.category
+        if args.class_name:
+            filter_args['class_name'] = args.class_name
+        if args.tag:
+            filter_args['tag'] = args.tag
+
     packages = mc.packages.filter(**filter_args)
-    field_labels = ["ID", "Name", "FQN", "Author", "Active", "Is Public"]
+    _print_package_list(packages)
+
+
+def _print_package_list(packages):
+    field_labels = ["ID", "Name", "FQN", "Author", "Active",
+                    "Is Public", "Type"]
     fields = ["id", "name", "fully_qualified_name", "author",
-              "enabled", "is_public"]
+              "enabled", "is_public", "type"]
     utils.print_list(packages, fields, field_labels, sortby=0)
 
 
@@ -463,9 +553,8 @@ def do_package_delete(mc, args):
     for package_id in args.id:
         try:
             mc.packages.delete(package_id)
-            print("Deleted package  '{0}'".format(package_id))
+            print("Deleted package '{0}'".format(package_id))
         except exceptions.NotFound:
-            raise exceptions.CommandError("Package %s not found" % package_id)
             failure_count += 1
             print("Failed to delete '{0}'; package not found".
                   format(package_id))
@@ -479,6 +568,7 @@ def do_package_delete(mc, args):
 
 def _handle_package_exists(mc, data, package, exists_action):
     name = package.manifest['FullName']
+    version = package.manifest.get('Version', '0')
     while True:
         print("Importing package {0}".format(name))
         try:
@@ -496,12 +586,13 @@ def _handle_package_exists(mc, data, package, exists_action):
                         break
             if res == 's':
                 print("Skipping.")
-                return
+                return None
             elif res == 'a':
                 print("Exiting.")
                 sys.exit()
             elif res == 'u':
-                pkgs = list(mc.packages.filter(fqn=name, owned=True))
+                pkgs = list(mc.packages.filter(fqn=name, version=version,
+                                               owned=True))
                 if not pkgs:
                     msg = (
                         "Got a conflict response, but could not find the "
@@ -528,7 +619,7 @@ def _handle_package_exists(mc, data, package, exists_action):
            help='Category list to attach.')
 @utils.arg('--is-public', action='store_true', default=False,
            help='Make the package available for users from other tenants.')
-@utils.arg('--version', default='',
+@utils.arg('--package-version', default='',
            help='Version of the package to use from repository '
                 '(ignored when importing with multiple packages).')
 @utils.arg('--exists-action', default='', choices=['a', 's', 'u'],
@@ -543,7 +634,7 @@ def do_package_import(mc, args):
     """
     data = {"is_public": args.is_public}
 
-    version = args.version
+    version = args.package_version
     if version and len(args.filename) >= 2:
         print("Requested to import more than one package, "
               "ignoring version.")
@@ -551,8 +642,6 @@ def do_package_import(mc, args):
 
     if args.categories:
         data["categories"] = args.categories
-
-    should_do_list = False
 
     total_reqs = {}
     for filename in args.filename:
@@ -574,8 +663,9 @@ def do_package_import(mc, args):
             print("Failed to create package for '{0}', reason: {1}".format(
                 filename, e))
             continue
-        should_do_list = True
         total_reqs.update(package.requirements(base_url=args.murano_repo_url))
+
+    imported_list = []
 
     for name, package in six.iteritems(total_reqs):
         image_specs = package.images()
@@ -594,13 +684,16 @@ def do_package_import(mc, args):
                 print("Error {0} occurred while installing "
                       "images for {1}".format(e, name))
         try:
-            _handle_package_exists(mc, data, package, args.exists_action)
+            imported_package = _handle_package_exists(
+                mc, data, package, args.exists_action)
+            if imported_package:
+                imported_list.append(imported_package)
         except Exception as e:
             print("Error {0} occurred while installing package {1}".format(
                 e, name))
 
-    if should_do_list:
-        do_package_list(mc)
+    if imported_list:
+        _print_package_list(imported_list)
 
 
 @utils.arg("id", metavar="<ID>",
@@ -615,7 +708,7 @@ def do_package_import(mc, args):
            default=None,
            help='A list of keywords connected to the application.')
 def do_package_update(mc, args):
-    """Edit the package in question"""
+    """Update an existing package."""
     data = {}
     parameters = ('is_public', 'enabled',
                   'name', 'description',
@@ -643,7 +736,6 @@ def do_bundle_import(mc, args):
     file names, relative to location of the bundle file. Requirements
     are first searched in the same directory.
     """
-    should_do_list = False
     total_reqs = {}
     for filename in args.filename:
         local_path = None
@@ -667,7 +759,6 @@ def do_bundle_import(mc, args):
                 filename, e))
             continue
 
-        should_do_list = True
         data = {"is_public": args.is_public}
 
         for package in bundle_file.packages(
@@ -678,6 +769,8 @@ def do_bundle_import(mc, args):
                 path=local_path,
             )
             total_reqs.update(requirements)
+
+    imported_list = []
 
     for name, dep_package in six.iteritems(total_reqs):
         image_specs = dep_package.images()
@@ -697,15 +790,17 @@ def do_bundle_import(mc, args):
                 print("Error {0} occurred while installing "
                       "images for {1}".format(e, name))
         try:
-            _handle_package_exists(
+            imported_package = _handle_package_exists(
                 mc, data, dep_package, args.exists_action)
+            if imported_package:
+                imported_list.append(imported_package)
         except exceptions.CommandError:
             raise
         except Exception as e:
             print("Error {0} occurred while "
                   "installing package {1}".format(e, name))
-    if should_do_list:
-        do_package_list(mc)
+    if imported_list:
+        _print_package_list(imported_list)
 
 
 def _handle_save_packages(packages, dst, base_url, no_images):
@@ -800,7 +895,7 @@ def do_bundle_save(mc, args):
 @utils.arg('-p', '--path', metavar='<PATH>',
            help='Path to the directory to store package. If not set will use '
                 'current directory.')
-@utils.arg('--version', default='',
+@utils.arg('--package-version', default='',
            help='Version of the package to use from repository '
                 '(ignored when saving with multiple packages).')
 @utils.arg('--no-images', action='store_true', default=False,
@@ -819,7 +914,7 @@ def do_package_save(mc, args):
     else:
         dst = os.getcwd()
 
-    version = args.version
+    version = args.package_version
     if version and len(args.filename) >= 2:
         print("Requested to save more than one package, "
               "ignoring version.")
@@ -943,9 +1038,15 @@ def _make_archive(archive_name, path):
                                                 f))
 
 
-def do_category_list(mc, args={}):
+def do_category_list(mc, args=None):
     """List all available categories."""
+    if args is None:
+        args = {}
     categories = mc.categories.list()
+    _print_category_list(categories)
+
+
+def _print_category_list(categories):
     field_labels = ["ID", "Name"]
     fields = ["id", "name"]
     utils.print_list(categories, fields, field_labels)
@@ -967,8 +1068,8 @@ def do_category_show(mc, args):
            help="Category name.")
 def do_category_create(mc, args):
     """Create a category."""
-    mc.categories.add({"name": args.name})
-    do_category_list(mc)
+    category = mc.categories.add({"name": args.name})
+    _print_category_list([category])
 
 
 @utils.arg("id", metavar="<ID>",

@@ -31,16 +31,18 @@ class SimpleReadOnlyMuranoClientTest(utils.CLIUtilsTestBase):
 
     def test_env_template_list(self):
         templates = self.get_table_struct('env-template-list')
-        self.assertEqual(['ID', 'Name', 'Created', 'Updated'], templates)
+        self.assertEqual(['ID', 'Name', 'Created', 'Updated', 'Is public'],
+                         templates)
 
     def test_environment_list(self):
         environment = self.get_table_struct('environment-list')
-        self.assertEqual(['ID', 'Name', 'Created', 'Updated'], environment)
+        self.assertEqual(['ID', 'Name', 'Status', 'Created', 'Updated'],
+                         environment)
 
     def test_package_list(self):
         packages = self.get_table_struct('package-list')
         self.assertEqual(['ID', 'Name', 'FQN', 'Author', 'Active',
-                          'Is Public'], packages)
+                          'Is Public', 'Type'], packages)
 
 
 class TableStructureMuranoClientTest(utils.CLIUtilsTestBase):
@@ -68,7 +70,8 @@ class TableStructureMuranoClientTest(utils.CLIUtilsTestBase):
         """
         self.create_murano_object('environment', 'MuranoTestTS-env-create')
         table_struct = self.get_table_struct('environment-list')
-        self.assertEqual(['ID', 'Name', 'Created', 'Updated'], table_struct)
+        self.assertEqual(['ID', 'Name', 'Status', 'Created', 'Updated'],
+                         table_struct)
 
     def test_table_struct_of_environment_delete(self):
         """Test scenario:
@@ -80,7 +83,8 @@ class TableStructureMuranoClientTest(utils.CLIUtilsTestBase):
                                                 'MuranoTestTS-env-del')
         self.delete_murano_object('environment', environment)
         table_struct = self.get_table_struct('environment-list')
-        self.assertEqual(['ID', 'Name', 'Created', 'Updated'], table_struct)
+        self.assertEqual(['ID', 'Name', 'Status', 'Created', 'Updated'],
+                         table_struct)
 
     def test_table_struct_of_category_create(self):
         """Test scenario:
@@ -111,7 +115,8 @@ class TableStructureMuranoClientTest(utils.CLIUtilsTestBase):
         self.create_murano_object('env-template',
                                   'MuranoTestTS-env-tmp-create')
         table_struct = self.get_table_struct('env-template-list')
-        self.assertEqual(['ID', 'Name', 'Created', 'Updated'], table_struct)
+        self.assertEqual(['ID', 'Name', 'Created', 'Updated', 'Is public'],
+                         table_struct)
 
     def test_table_struct_of_env_template_delete(self):
         """Test scenario:
@@ -123,7 +128,8 @@ class TableStructureMuranoClientTest(utils.CLIUtilsTestBase):
                                                  'MuranoTestTS-env-tmp-create')
         self.delete_murano_object('env-template', env_template)
         table_struct = self.get_table_struct('env-template-list')
-        self.assertEqual(['ID', 'Name', 'Created', 'Updated'], table_struct)
+        self.assertEqual(['ID', 'Name', 'Created', 'Updated', 'Is public'],
+                         table_struct)
 
 
 class EnvironmentMuranoSanityClientTest(utils.CLIUtilsTestBase):
@@ -343,6 +349,27 @@ class EnvTemplateMuranoSanityClientTest(utils.CLIUtilsTestBase):
         self.assertIn('environment_id', tested_env_created)
         self.assertIn('session_id', tested_env_created)
 
+    def test_env_template_clone(self):
+        """Test scenario:
+            1) create environment template
+            2) clone template
+            3) check that create environment template has the new name
+            4) delete new template
+        """
+
+        env_template = self.create_murano_object_parameter(
+            'env-template', 'TestMuranoSanityEnvTemp', '--is-public')
+        new_template = self.generate_name('TestMuranoSanityEnvTemp')
+
+        params = "{0} {1}".format(env_template['ID'], new_template)
+        template_created = self.listing('env-template-clone', params=params)
+        list = map(lambda x: ({x['Property']: x['Value']}), template_created)
+        result_name = filter(lambda x: x.get('name'), list)[0]['name']
+        result_id = filter(lambda x: x.get('id'), list)[0]['id']
+        self.listing('env-template-delete', params=result_id)
+
+        self.assertIn(result_name, new_template)
+
 
 class PackageMuranoSanityClientTest(utils.CLIUtilsTestPackagesBase):
     """Sanity tests for testing actions with Packages.
@@ -457,7 +484,7 @@ class PackageMuranoSanityClientTest(utils.CLIUtilsTestPackagesBase):
             self.dummy_app_path,
             '--exists-action', 's'
         )
-        skip_package = self.import_package(
+        updated_package = self.import_package(
             self.app_name,
             self.dummy_app_path,
             '--exists-action', 's'
@@ -465,7 +492,7 @@ class PackageMuranoSanityClientTest(utils.CLIUtilsTestPackagesBase):
         package_list = self.listing("package-list")
 
         self.assertIn(package, package_list)
-        self.assertEqual(package, skip_package)
+        self.assertIsNone(updated_package)
 
     def test_package_import_abort(self):
         """Test scenario:
