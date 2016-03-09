@@ -21,6 +21,8 @@ override_dh_auto_install:
 			--root $(CURDIR)/debian/python3-muranoclient; \
 	done
 	rm -f $(CURDIR)/debian/python*/usr/lib/python*/dist-packages/*.pth
+	mv $(CURDIR)/debian/python-muranoclient/usr/bin/murano $(CURDIR)/debian/python-muranoclient/usr/bin/python2-murano
+	mv $(CURDIR)/debian/python3-muranoclient/usr/bin/murano $(CURDIR)/debian/python3-muranoclient/usr/bin/python3-murano
 
 override_dh_auto_test:
 ifeq (,$(findstring nocheck, $(DEB_BUILD_OPTIONS)))
