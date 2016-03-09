@@ -89,6 +89,7 @@ Depends: python-babel,
          python-yaql (>= 1.1.0),
          ${misc:Depends},
          ${python:Depends},
+Suggests: python-muranoclient-doc
 Description: cloud-ready application catalog - Python 2.7 client module
  Murano Project introduces an application catalog, which allows application
  developers and cloud administrators to publish various cloud-ready
@@ -120,6 +121,7 @@ Depends: python3-babel,
          python3-yaql (>= 1.1.0),
          ${misc:Depends},
          ${python3:Depends},
+Suggests: python-muranoclient-doc
 Description: cloud-ready application catalog - Python 3.x client module
  Murano Project introduces an application catalog, which allows application
  developers and cloud administrators to publish various cloud-ready
