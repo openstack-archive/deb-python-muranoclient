@@ -267,6 +267,36 @@ class CategoryMuranoSanityClientTest(utils.CLIUtilsTestBase):
         self.assertIn(category['Name'],
                       map(lambda x: x['Value'], category_show))
 
+    def test_non_existing_category_delete(self):
+        """Test scenario:
+            1) try to call category-delete for non existing category
+            2) check that error message contains user friendly substring
+        """
+        result = self.murano('category-delete', params='non-existing',
+                             fail_ok=True)
+        self.assertIn("Failed to delete 'non-existing'; category not found",
+                      result)
+
+    def test_non_existing_category_show(self):
+        """Test scenario:
+            1) try to call category-show for non existing category
+            2) check that error message contains user friendly substring
+        """
+        result = self.murano('category-show', params='non-existing',
+                             fail_ok=True)
+        self.assertIn("Category id 'non-existing' not found", result)
+
+    def test_category_create_with_long_name(self):
+        """Test scenario:
+            1) try to create category with long name (>80)
+            2) check that error message contains user friendly substring
+        """
+        result = self.murano('category-create', params='name' * 21,
+                             fail_ok=True)
+        self.assertIn(
+            "Category name should be 80 characters maximum (HTTP 400)",
+            result)
+
 
 class EnvTemplateMuranoSanityClientTest(utils.CLIUtilsTestBase):
     """Sanity tests for testing actions with Environment template.
@@ -642,3 +672,20 @@ class DeployMuranoEnvironmentTest(utils.CLIUtilsTestPackagesBase):
         deployments = self.listing('deployment-list', params=env_id)
         self.assertEqual('success', deployments[1]['State'])
         self.assertEqual(2, len(deployments))
+
+
+class BundleMuranoSanityClientTest(utils.CLIUtilsTestPackagesBase):
+    """Sanity tests for testing actions with bundle.
+
+    Tests for the Murano CLI commands which check basic actions with
+    bundles.
+    """
+
+    def test_bundle_import_without_bundle_name(self):
+        """Test scenario:
+            1) Execute murano bundle-import command without bundle name
+            2) check that error message contains user friendly substring
+        """
+        result = self.murano('bundle-import', params='',
+                             fail_ok=True)
+        self.assertIn("murano bundle-import: error: too few arguments", result)
