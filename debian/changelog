@@ -1,4 +1,4 @@
-python-muranoclient (0.8.2-1) UNRELEASED; urgency=medium
+python-muranoclient (0.8.3-1) experimental; urgency=medium
 
   [ Ondřej Nový ]
   * Fixed VCS URLs (https).
