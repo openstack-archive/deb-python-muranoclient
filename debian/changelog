@@ -1,3 +1,9 @@
+python-muranoclient (0.8.3-3) unstable; urgency=medium
+
+  * Uploading to unstable.
+
+ -- Thomas Goirand <zigo@debian.org>  Mon, 04 Apr 2016 16:34:28 +0000
+
 python-muranoclient (0.8.3-2) experimental; urgency=medium
 
   * Added Python 3 support.
