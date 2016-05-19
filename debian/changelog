@@ -2,6 +2,7 @@ python-muranoclient (0.8.3-4) UNRELEASED; urgency=medium
 
   * Standards-Version is 3.9.8 now (no change)
   * d/rules: Removed UPSTREAM_GIT, changed to default value
+  * d/copyright: Changed source URL to new one
 
  -- Ondřej Nový <novy@ondrej.org>  Sat, 09 Apr 2016 19:28:12 +0200
 
