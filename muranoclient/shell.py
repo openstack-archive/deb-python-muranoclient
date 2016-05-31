@@ -22,8 +22,7 @@ import argparse
 import sys
 
 import glanceclient
-from keystoneclient.auth.identity.generic import password
-from keystoneclient.auth.identity.generic import token
+from keystoneclient.auth.identity.generic.cli import DefaultCLI
 from keystoneclient.auth.identity import v3 as identity
 from keystoneclient import discover
 from keystoneclient import exceptions as ks_exc
@@ -43,6 +42,19 @@ from muranoclient.openstack.common.apiclient import exceptions as exc
 logger = logging.getLogger(__name__)
 
 DEFAULT_REPO_URL = "http://apps.openstack.org/api/v1/murano_repo/liberty/"
+
+
+# quick local fix for keystoneclient bug which blocks built-in reauth
+# functionality in case of expired token.
+# bug: https://bugs.launchpad.net/python-keystoneclient/+bug/1551392
+# fix: https://review.openstack.org/#/c/286236/
+class AuthCLI(DefaultCLI):
+    def invalidate(self):
+        retval = super(AuthCLI, self).invalidate()
+        if self._token:
+            self._token = None
+            retval = True
+        return retval
 
 
 class MuranoShell(object):
@@ -131,6 +143,10 @@ class MuranoShell(object):
                             default=utils.env('GLANCE_URL'),
                             help='Defaults to env[GLANCE_URL].')
 
+        parser.add_argument('--glare-url',
+                            default=utils.env('GLARE_URL'),
+                            help='Defaults to env[GLARE_URL].')
+
         parser.add_argument('--murano-api-version',
                             default=utils.env(
                                 'MURANO_API_VERSION', default='1'),
@@ -158,11 +174,11 @@ class MuranoShell(object):
                                   'or {0}'.format(DEFAULT_REPO_URL)))
 
         parser.add_argument('--murano-packages-service',
-                            choices=['murano', 'glance'],
+                            choices=['murano', 'glance', 'glare'],
                             default=utils.env('MURANO_PACKAGES_SERVICE',
                                               default='murano'),
                             help='Specifies if murano-api ("murano") or '
-                                 'Glance Artifact Repository ("glance") '
+                                 'Glance Artifact Repository ("glare") '
                                  'should be used to store murano packages. '
                                  'Defaults to env[MURANO_PACKAGES_SERVICE] or '
                                  'to "murano"')
@@ -243,59 +259,6 @@ class MuranoShell(object):
 
         return (v2_auth_url, v3_auth_url)
 
-    def _get_keystone_auth(self, session, auth_url, **kwargs):
-        auth_token = kwargs.pop('auth_token', None)
-        if auth_token:
-            return token.Token(
-                auth_url,
-                auth_token,
-                project_id=kwargs.pop('project_id'),
-                project_name=kwargs.pop('project_name'),
-                project_domain_id=kwargs.pop('project_domain_id'),
-                project_domain_name=kwargs.pop('project_domain_name'))
-
-        # NOTE(starodubcevna): this is a workaround for the bug:
-        # https://bugs.launchpad.net/python-openstackclient/+bug/1447704
-        # Change that fix this error in keystoneclient was abandoned,
-        # so we should use workaround until we move to keystoneauth.
-        # The idea of the code came from glanceclient.
-
-        (v2_auth_url, v3_auth_url) = self._discover_auth_versions(
-            session=session,
-            auth_url=auth_url)
-
-        if v3_auth_url:
-            # NOTE(starodubcevna): set user_domain_id and project_domain_id
-            # to default as it done in other projects.
-            return password.Password(auth_url,
-                                     username=kwargs.pop('username'),
-                                     user_id=kwargs.pop('user_id'),
-                                     password=kwargs.pop('password'),
-                                     user_domain_id=kwargs.pop(
-                                         'user_domain_id') or 'default',
-                                     user_domain_name=kwargs.pop(
-                                         'user_domain_name'),
-                                     project_id=kwargs.pop('project_id'),
-                                     project_name=kwargs.pop('project_name'),
-                                     project_domain_id=kwargs.pop(
-                                         'project_domain_id') or 'default')
-        elif v2_auth_url:
-            return password.Password(auth_url,
-                                     username=kwargs.pop('username'),
-                                     user_id=kwargs.pop('user_id'),
-                                     password=kwargs.pop('password'),
-                                     project_id=kwargs.pop('project_id'),
-                                     project_name=kwargs.pop('project_name'))
-        else:
-            # if we get here it means domain information is provided
-            # (caller meant to use Keystone V3) but the auth url is
-            # actually Keystone V2. Obviously we can't authenticate a V3
-            # user using V2.
-            exc.CommandError("Credential and auth_url mismatch. The given "
-                             "auth_url is using Keystone V2 endpoint, which "
-                             "may not able to handle Keystone V3 credentials. "
-                             "Please provide a correct Keystone V3 auth_url.")
-
     def _setup_logging(self, debug):
         # Output the logs to command-line interface
         color_handler = handlers.ColorHandler(sys.stdout)
@@ -352,13 +315,13 @@ class MuranoShell(object):
                     "If you specify --os-no-client-auth"
                     " you must also specify a Murano API URL"
                     " via either --murano-url or env[MURANO_URL]")
-            if (not args.glance_url and
-                    args.murano_packages_service == 'glance'):
+            if (not args.glare_url and
+                    args.murano_packages_service in ['glance', 'glare']):
                 raise exc.CommandError(
                     "If you specify --os-no-client-auth and"
                     " set murano-packages-service to 'glance'"
-                    " you must also specify a Glance API URL"
-                    " via either --glance-url or env[GLANCE_URL]")
+                    " you must also specify a glance glare API URL"
+                    " via either --glare-url or env[GLARE_API]")
 
         else:
             # Tenant name or ID is needed to make keystoneclient retrieve a
@@ -399,22 +362,24 @@ class MuranoShell(object):
         else:
             # Create a keystone session and keystone auth
             keystone_session = ksession.Session.load_from_cli_options(args)
-            project_id = args.os_project_id or args.os_tenant_id
-            project_name = args.os_project_name or args.os_tenant_name
 
-            keystone_auth = self._get_keystone_auth(
-                keystone_session,
-                args.os_auth_url,
-                username=args.os_username,
-                user_id=args.os_user_id,
-                user_domain_id=args.os_user_domain_id,
-                user_domain_name=args.os_user_domain_name,
-                password=args.os_password,
-                auth_token=args.os_auth_token,
-                project_id=project_id,
-                project_name=project_name,
-                project_domain_id=args.os_project_domain_id,
-                project_domain_name=args.os_project_domain_name)
+            args.os_project_name = args.os_project_name or args.os_tenant_name
+            args.os_project_id = args.os_project_id or args.os_tenant_id
+
+            # make args compatible with DefaultCLI/AuthCLI
+            args.os_token = args.os_auth_token
+            args.os_endpoint = endpoint
+            # avoid password prompt if no password given
+            args.os_password = args.os_password or '<no password>'
+            (v2_auth_url, v3_auth_url) = self._discover_auth_versions(
+                keystone_session, args.os_auth_url)
+            if v3_auth_url:
+                args.os_project_domain_id = (args.os_project_domain_id or
+                                             'default')
+                args.os_user_domain_id = (args.os_user_domain_id or
+                                          'default')
+
+            keystone_auth = AuthCLI.load_from_argparse_arguments(args)
 
             endpoint_type = args.os_endpoint_type or 'publicURL'
             service_type = args.os_service_type or 'application-catalog'
@@ -461,13 +426,32 @@ class MuranoShell(object):
                            "Image creation will be unavailable.")
             kwargs['glance_client'] = None
 
-        if args.murano_packages_service == 'glance':
-            artifacts_client = art_client.Client(endpoint=glance_endpoint,
+        if args.murano_packages_service in ['glance', 'glare']:
+            glare_endpoint = args.glare_url
+
+            if not glare_endpoint:
+                # no glare_endpoint and we requested to store packages in glare
+                # let's check keystone
+                try:
+                    glare_endpoint = keystone_auth.get_endpoint(
+                        keystone_session,
+                        service_type='artifact',
+                        region_name=args.os_region_name)
+                except Exception:
+                    raise exc.CommandError(
+                        "You set murano-packages-service to {}"
+                        " but there is not 'artifact' endpoint in keystone"
+                        " Either register one or specify endpoint "
+                        " via either --glare-url or env[GLARE_API]".format(
+                            args.murano_packages_service))
+
+            auth_token = \
+                args.os_auth_token or keystone_auth.get_token(keystone_session)
+
+            artifacts_client = art_client.Client(endpoint=glare_endpoint,
                                                  type_name='murano',
                                                  type_version=1,
-                                                 username=args.os_username,
-                                                 password=args.os_password,
-                                                 token=args.os_auth_token,
+                                                 token=auth_token,
                                                  insecure=args.insecure)
             kwargs['artifacts_client'] = artifacts_client
 
