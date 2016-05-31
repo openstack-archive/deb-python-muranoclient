@@ -1,10 +1,14 @@
-python-muranoclient (0.8.3-4) UNRELEASED; urgency=medium
+python-muranoclient (0.8.4-1) UNRELEASED; urgency=medium
 
+  [ Ondřej Nový ]
   * Standards-Version is 3.9.8 now (no change)
   * d/rules: Removed UPSTREAM_GIT, changed to default value
   * d/copyright: Changed source URL to new one
 
- -- Ondřej Nový <novy@ondrej.org>  Sat, 09 Apr 2016 19:28:12 +0200
+  [ Corey Bryant ]
+  * New upstream release.
+
+ -- Corey Bryant <corey.bryant@canonical.com>  Tue, 31 May 2016 14:55:52 -0400
 
 python-muranoclient (0.8.3-3) unstable; urgency=medium
 
