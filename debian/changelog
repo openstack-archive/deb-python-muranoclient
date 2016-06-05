@@ -1,4 +1,4 @@
-python-muranoclient (0.8.4-1) UNRELEASED; urgency=medium
+python-muranoclient (0.8.4-1) experimental; urgency=medium
 
   [ Ondřej Nový ]
   * Standards-Version is 3.9.8 now (no change)
@@ -10,7 +10,7 @@ python-muranoclient (0.8.4-1) UNRELEASED; urgency=medium
   * d/gbp.conf: Update branch for newton.
   * d/control: Align (Build-)Depends with upstream.
 
- -- Corey Bryant <corey.bryant@canonical.com>  Tue, 31 May 2016 14:55:52 -0400
+ -- Corey Bryant <corey.bryant@canonical.com>  Sun, 05 Jun 2016 23:23:25 +0000
 
 python-muranoclient (0.8.3-3) unstable; urgency=medium
 
