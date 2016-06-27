@@ -1,1 +1,2 @@
 no-intersphinx.patch
+CVE-2016-4972_Use_yaml.SafeLoader_instead_of_yaml.Loader.patch
