@@ -9,6 +9,7 @@ python-muranoclient (0.8.3-4) unstable; urgency=high
   * CVE-2016-4972: RCE vulnerability in Openstack Murano using insecure YAML
     tags. Adds upstream patch: Use yaml.SafeLoader instead of yaml.Loader.
     (Closes: #828063).
+  * Standards-Version is now 3.9.8 (no change).
 
  -- Thomas Goirand <zigo@debian.org>  Mon, 27 Jun 2016 18:53:01 +0000
 
