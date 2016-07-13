@@ -202,16 +202,15 @@ class UnitTestsForClassesAndFunctions(testtools.TestCase):
         self.assertEqual('1234', result)
 
     def test_package_filter_pagination_next_marker(self):
-        """``PackageManager.filter`` handles `next_marker` parameter related
-        to pagination in API correctly.
-        """
+        # ``PackageManager.filter`` handles `next_marker` parameter related
+        # to pagination in API correctly.
         responses = [
             {'next_marker': 'test_marker',
              'packages': [{'name': 'test_package_1'}]},
             {'packages': [{'name': 'test_package_2'}]}
         ]
 
-        def json_request(method, url, *args, **kwargs):
+        def json_request(url, method, *args, **kwargs):
             self.assertIn('/v1/catalog/packages', url)
 
             return mock.MagicMock(), responses.pop(0)
@@ -231,7 +230,7 @@ class UnitTestsForClassesAndFunctions(testtools.TestCase):
             {'packages': [{'name': 'test_package_2'}]}
         ]
 
-        def json_request(method, url, *args, **kwargs):
+        def json_request(url, method, *args, **kwargs):
             self.assertIn('category=%D0%BF%D0%B8%D0%B2%D0%BE', url)
             return mock.MagicMock(), responses.pop(0)
 
@@ -253,8 +252,7 @@ class UnitTestsForClassesAndFunctions(testtools.TestCase):
         self.assertEqual({'a': 'b'}, result)
 
     def test_env_template_manager_list(self):
-        """It tests the list of environment templates.
-        """
+        """Tests the list of environment templates."""
         manager = templates.EnvTemplateManager(api)
         result = manager.list()
 

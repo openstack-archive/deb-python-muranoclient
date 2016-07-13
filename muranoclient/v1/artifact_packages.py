@@ -12,6 +12,8 @@
 # License for the specific language governing permissions and limitations
 # under the License.
 
+import collections
+
 from glanceclient import exc as glance_exc
 import six
 import yaml
@@ -54,6 +56,23 @@ class ArtifactRepo(object):
 
         inherits = self._get_local_inheritance(package.classes)
 
+        # check for global inheritance
+        ancestor_queue = collections.deque(inherits.keys())
+        while ancestor_queue:
+            ancestor_name = ancestor_queue.popleft()
+            child_classes = inherits[ancestor_name]
+
+            ancestors = self.list(class_definitions=ancestor_name)
+            for ancestor in ancestors:
+                # check if ancestor inherits anything
+                ancestor_inherits = \
+                    ancestor.type_specific_properties.get('inherits', {})
+                for name, value in ancestor_inherits.items():
+                    # check if this is the class we actually inherit
+                    if ancestor_name in value:
+                        ancestor_queue.append(name)
+                        inherits[name] = child_classes
+
         package_draft['inherits'] = inherits
 
         keywords = self._keywords_from_display_name(
@@ -63,8 +82,8 @@ class ArtifactRepo(object):
 
         # NOTE(ativelkov): this is very racy, but until we have a chance to
         # enforce uniqueness right in glance this is the only way to do it
-        is_public = package_draft.get('visibility', 'private')
-        if is_public:
+        visibility = package_draft.get('visibility', 'private')
+        if visibility == 'public':
             filters = {}
         else:
             filters = {'owner': self.tenant}
@@ -190,7 +209,7 @@ class ArtifactRepo(object):
         ui_stream = "".join(
             self.client.artifacts.download_blob(app_id, 'ui_definition'))
         if loader_cls is None:
-            loader_cls = yaml.Loader
+            loader_cls = yaml.SafeLoader
         return yaml.load(ui_stream, loader_cls)
 
     def get_logo(self, app_id):
@@ -282,7 +301,7 @@ class PackageManagerAdapter(object):
 
     @rewrap_http_exceptions
     def get_ui(self, app_id, loader_cls=None):
-        return self.glare.get_ui(app_id, loader_cls)
+        return self.legacy.get_ui(app_id, loader_cls)
 
 
 class PackageWrapper(object):

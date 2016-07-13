@@ -56,7 +56,7 @@ LOG = logging.getLogger(__name__)
 # Decorator for cli-args
 def arg(*args, **kwargs):
     def _decorator(func):
-        # Because of the sematics of decorator composition if we just append
+        # Because of the semantics of decorator composition if we just append
         # to the options list positional options will appear to be backwards.
         func.__dict__.setdefault('arguments', []).insert(0, (args, kwargs))
         return func
@@ -163,7 +163,9 @@ def exit(msg=''):
 
 
 def getsockopt(self, *args, **kwargs):
-    """A function which allows us to monkey patch eventlet's
+    """Allows us to monkey patch eventlet's GreenSocket
+
+    A function which allows us to monkey patch eventlet's
     GreenSocket, adding a required 'getsockopt' method.
     TODO: (mclaren) we can remove this once the eventlet fix
     (https://bitbucket.org/eventlet/eventlet/commits/609f230)
@@ -292,7 +294,9 @@ class Package(FileWrapperMixin):
 
     @staticmethod
     def from_location(name, base_url='', version='', url='', path=None):
-        """If path is supplied search for name file in the path, otherwise
+        """Open file using one of three possible options
+
+        If path is supplied search for name file in the path, otherwise
         if url is supplied - open that url and finally search murano
         repository for the package.
         """
@@ -362,7 +366,8 @@ class Package(FileWrapperMixin):
                 filename = "Classes/%s" % class_file
                 if filename not in self.contents.namelist():
                     continue
-                klass = yaml.safe_load(self.contents.open(filename))
+                klass = yaml.load(self.contents.open(filename),
+                                  DummyYaqlYamlLoader)
                 self._classes[class_name] = klass
         return self._classes
 
@@ -384,18 +389,92 @@ class Package(FileWrapperMixin):
                 self._logo = None
         return self._logo
 
-    def requirements(self, base_url, path=None, dep_dict=None):
-        """Recursively scan Require section of manifests of all the
-        dependencies. Returns a dict with FQPNs as keys and respective
-        Package objects as values
+    def _get_package_order(self, packages_graph):
+        """Sorts packages according to dependencies between them
+
+        Murano allows cyclic dependencies. It is impossible
+        to do topological sort for graph with cycles, so at first
+        graph condensation should be built.
+        For condensation building Kosaraju's algorithm is used.
+        Packages in strongly connected components can be situated
+        in random order to each other.
         """
-        if not dep_dict:
-            dep_dict = {}
-        dep_dict[self.manifest['FullName']] = self
-        if 'Require' in self.manifest:
-            for dep_name, ver in six.iteritems(self.manifest['Require']):
-                if dep_name in dep_dict:
-                    continue
+        def topological_sort(graph, start_node):
+            order = []
+            not_seen = set(graph)
+
+            def dfs(node):
+                not_seen.discard(node)
+                for dep_node in graph[node]:
+                    if dep_node in not_seen:
+                        dfs(dep_node)
+                order.append(node)
+
+            dfs(start_node)
+            return order
+
+        def transpose_graph(graph):
+            transposed = collections.defaultdict(list)
+            for node, deps in six.viewitems(graph):
+                for dep in deps:
+                    transposed[dep].append(node)
+            return transposed
+
+        order = topological_sort(packages_graph, self.manifest['FullName'])
+        order.reverse()
+        transposed = transpose_graph(packages_graph)
+
+        def top_sort_by_components(graph, component_order):
+            result = []
+            seen = set()
+
+            def dfs(node):
+                seen.add(node)
+                result.append(node)
+                for dep_node in graph[node]:
+                    if dep_node not in seen:
+                        dfs(dep_node)
+            for item in component_order:
+                if item not in seen:
+                    dfs(item)
+            return reversed(result)
+        return top_sort_by_components(transposed, order)
+
+    def requirements(self, base_url, path=None, dep_dict=None):
+        """Scans Require section of manifests of all the dependencies.
+
+        Returns a dict with FQPNs as keys and respective Package objects
+        as values, ordered by topological sort.
+
+        :param base_url: url of packages location
+        :param path: local path of packages location
+        :param dep_dict: unused. Left for backward compatibility
+        """
+
+        unordered_requirements = {}
+        requirements_graph = collections.defaultdict(list)
+        dep_queue = collections.deque([(self.manifest['FullName'], self)])
+        while dep_queue:
+            dep_name, dep_file = dep_queue.popleft()
+            unordered_requirements[dep_name] = dep_file
+            direct_deps = Package._get_direct_deps(dep_file, base_url, path)
+            for name, file in direct_deps:
+                if name not in unordered_requirements:
+                    dep_queue.append((name, file))
+            requirements_graph[dep_name] = [dep[0] for dep in direct_deps]
+
+        ordered_reqs_names = self._get_package_order(requirements_graph)
+        ordered_reqs_dict = collections.OrderedDict()
+        for name in ordered_reqs_names:
+            ordered_reqs_dict[name] = unordered_requirements[name]
+
+        return ordered_reqs_dict
+
+    @staticmethod
+    def _get_direct_deps(package, base_url, path):
+        result = []
+        if 'Require' in package.manifest:
+            for dep_name, ver in six.iteritems(package.manifest['Require']):
                 try:
                     req_file = Package.from_location(
                         dep_name,
@@ -407,14 +486,10 @@ class Package(FileWrapperMixin):
                     LOG.error("Error {0} occurred while parsing package {1}, "
                               "required by {2} package".format(
                                   e, dep_name,
-                                  self.manifest['FullName']))
+                                  package.manifest['FullName']))
                     continue
-                dep_dict.update(req_file.requirements(
-                    base_url=base_url,
-                    path=path,
-                    dep_dict=dep_dict,
-                ))
-        return dep_dict
+                result.append((req_file.manifest['FullName'], req_file))
+        return result
 
 
 def save_image_local(image_spec, base_url, dst):
@@ -449,7 +524,9 @@ def save_image_local(image_spec, base_url, dst):
 def ensure_images(glance_client, image_specs, base_url,
                   local_path=None,
                   is_package_public=False):
-    """Ensure that images from image_specs are available in glance. If not
+    """Ensure that images are available
+
+    Ensure that images from image_specs are available in glance. If not
     attempts: instructs glance to download the images and sets murano-specific
     metadata for it.
     """
@@ -559,7 +636,9 @@ class Bundle(FileWrapperMixin):
         return Bundle.from_file(file_obj)
 
     def package_specs(self):
-        """Returns a generator yielding package specifications i.e.
+        """Get a generator yielding package specifications
+
+        Returns a generator yielding package specifications i.e.
         dicts with 'Name' and 'Version' fields
         """
         self._file.seek(0)
@@ -585,7 +664,9 @@ class Bundle(FileWrapperMixin):
             yield package
 
     def packages(self, base_url='', path=None):
-        """Returns a generator, yielding Package objects for each package
+        """Get a generator yielding Package objects
+
+        Returns a generator, yielding Package objects for each package
         found in the bundle.
         """
         for package in self.package_specs():
@@ -605,12 +686,20 @@ class Bundle(FileWrapperMixin):
             yield pkg_obj
 
 
-class YaqlYamlLoader(yaml.Loader):
+class DummyYaqlYamlLoader(yaml.SafeLoader):
+    """Constructor that treats !yaql as string."""
+    pass
+
+DummyYaqlYamlLoader.add_constructor(
+    u'!yaql', DummyYaqlYamlLoader.yaml_constructors[u'tag:yaml.org,2002:str'])
+
+
+class YaqlYamlLoader(yaml.SafeLoader):
     pass
 
 # workaround for PyYAML bug: http://pyyaml.org/ticket/221
 resolvers = {}
-for k, v in yaml.Loader.yaml_implicit_resolvers.items():
+for k, v in yaml.SafeLoader.yaml_implicit_resolvers.items():
     resolvers[k] = v[:]
 YaqlYamlLoader.yaml_implicit_resolvers = resolvers
 

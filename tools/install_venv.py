@@ -21,9 +21,12 @@
 Installation script for python-muranoclient's development virtualenv
 """
 
-import ConfigParser
+from __future__ import print_function
+
 import os
 import sys
+
+from six.moves import configparser
 
 import install_venv_common as install_venv
 
@@ -45,7 +48,7 @@ def print_help(project, venv, root):
 
  $ %(root)s/tools/with_venv.sh <your command>
     """
-    print help % dict(project=project, venv=venv, root=root)
+    print(help % dict(project=project, venv=venv, root=root))
 
 
 def main(argv):
@@ -58,7 +61,7 @@ def main(argv):
     pip_requires = os.path.join(root, 'requirements.txt')
     test_requires = os.path.join(root, 'test-requirements.txt')
     py_version = "python%s.%s" % (sys.version_info[0], sys.version_info[1])
-    setup_cfg = ConfigParser.ConfigParser()
+    setup_cfg = configparser.ConfigParser()
     setup_cfg.read('setup.cfg')
     project = setup_cfg.get('metadata', 'name')
 

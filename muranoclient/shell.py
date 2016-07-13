@@ -340,6 +340,7 @@ class MuranoShell(object):
                                        " either --os-auth-url or via"
                                        " env[OS_AUTH_URL]")
 
+        endpoint_type = args.os_endpoint_type or 'publicURL'
         endpoint = args.murano_url
         glance_endpoint = args.glance_url
 
@@ -368,7 +369,7 @@ class MuranoShell(object):
 
             # make args compatible with DefaultCLI/AuthCLI
             args.os_token = args.os_auth_token
-            args.os_endpoint = endpoint
+            args.os_endpoint = ''
             # avoid password prompt if no password given
             args.os_password = args.os_password or '<no password>'
             (v2_auth_url, v3_auth_url) = self._discover_auth_versions(
@@ -381,13 +382,13 @@ class MuranoShell(object):
 
             keystone_auth = AuthCLI.load_from_argparse_arguments(args)
 
-            endpoint_type = args.os_endpoint_type or 'publicURL'
             service_type = args.os_service_type or 'application-catalog'
 
             if not endpoint:
                 endpoint = keystone_auth.get_endpoint(
                     keystone_session,
                     service_type=service_type,
+                    interface=endpoint_type,
                     region_name=args.os_region_name)
 
             kwargs = {
@@ -408,6 +409,7 @@ class MuranoShell(object):
                 glance_endpoint = keystone_auth.get_endpoint(
                     keystone_session,
                     service_type='image',
+                    interface=endpoint_type,
                     region_name=args.os_region_name)
             except Exception:
                 pass
@@ -415,8 +417,10 @@ class MuranoShell(object):
         glance_client = None
         if glance_endpoint:
             try:
+                # TODO(starodubcevna): switch back to glance APIv2 when it will
+                # be ready for use.
                 glance_client = glanceclient.Client(
-                    '2', glance_endpoint, **glance_kwargs)
+                    '1', glance_endpoint, **glance_kwargs)
             except Exception:
                 pass
         if glance_client:
@@ -436,6 +440,7 @@ class MuranoShell(object):
                     glare_endpoint = keystone_auth.get_endpoint(
                         keystone_session,
                         service_type='artifact',
+                        interface=endpoint_type,
                         region_name=args.os_region_name)
                 except Exception:
                     raise exc.CommandError(
@@ -475,8 +480,7 @@ class MuranoShell(object):
     @utils.arg('command', metavar='<subcommand>', nargs='?',
                help='Display help for <subcommand>')
     def do_help(self, args):
-        """Display help about this program or one of its subcommands.
-        """
+        """Display help about this program or one of its subcommands."""
         if getattr(args, 'command', None):
             if args.command in self.subcommands:
                 self.subcommands[args.command].print_help()

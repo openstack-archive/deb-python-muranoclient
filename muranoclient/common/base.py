@@ -34,7 +34,9 @@ except NameError:
 
 
 def getid(obj):
-    """Abstracts the common pattern of allowing both an object or
+    """Get obj's id or object itself if no id
+
+    Abstracts the common pattern of allowing both an object or
     an object's ID (UUID) as a parameter when dealing with relationships.
     """
     try:
@@ -44,7 +46,9 @@ def getid(obj):
 
 
 class Manager(object):
-    """Managers interact with a particular type of API (servers, flavors,
+    """Interacts with type of API
+
+    Managers interact with a particular type of API (servers, flavors,
     images, etc.) and provide CRUD operations for them.
     """
     resource_class = None
@@ -57,7 +61,7 @@ class Manager(object):
 
         if headers is None:
             headers = {}
-        resp, body = self.api.json_request('GET', url, headers=headers)
+        resp, body = self.api.json_request(url, 'GET', headers=headers)
 
         if obj_class is None:
             obj_class = self.resource_class
@@ -73,12 +77,12 @@ class Manager(object):
     def _delete(self, url, headers=None):
         if headers is None:
             headers = {}
-        self.api.raw_request('DELETE', url, headers=headers)
+        self.api.request(url, 'DELETE', headers=headers)
 
     def _update(self, url, data, response_key=None, headers=None):
         if headers is None:
             headers = {}
-        resp, body = self.api.json_request('PUT', url, data=data,
+        resp, body = self.api.json_request(url, 'PUT', data=data,
                                            headers=headers)
         # PUT requests may not return a body
         if body:
@@ -91,10 +95,10 @@ class Manager(object):
         if headers is None:
             headers = {}
         if data:
-            resp, body = self.api.json_request('POST', url,
+            resp, body = self.api.json_request(url, 'POST',
                                                data=data, headers=headers)
         else:
-            resp, body = self.api.json_request('POST', url, headers=headers)
+            resp, body = self.api.json_request(url, 'POST', headers=headers)
         if return_raw:
             if response_key:
                 return body[response_key]
@@ -106,7 +110,7 @@ class Manager(object):
     def _get(self, url, response_key=None, return_raw=False, headers=None):
         if headers is None:
             headers = {}
-        resp, body = self.api.json_request('GET', url, headers=headers)
+        resp, body = self.api.json_request(url, 'GET', headers=headers)
         if return_raw:
             if response_key:
                 return body[response_key]
@@ -162,13 +166,16 @@ class ManagerWithFind(Manager):
 
 
 class Resource(object):
-    """A resource represents a particular instance of an object (tenant, user,
+    """Represents an instance of an object
+
+    A resource represents a particular instance of an object (tenant, user,
     etc). This is pretty much just a bag for attributes.
 
     :param manager: Manager object
     :param info: dictionary representing resource attributes
     :param loaded: prevent lazy-loading if set to True
     """
+
     def __init__(self, manager, info, loaded=False):
         self.manager = manager
         self._info = info

@@ -21,11 +21,26 @@ from six.moves.urllib import parse
 from muranoclient.glance import ArtifactType
 
 
+glare_urls = {
+    'create': '/v{version}/artifacts/{type_name}/v{type_version}/drafts',
+    'update_get_delete': '/v{version}/artifacts/{type_name}/v{type_version}'
+                         '/{artifact_id}',
+    'list_drafts': '/v{version}/artifacts/{type_name}/v{type_version}/drafts?',
+    'list_no_drafts': '/v{version}/artifacts/{type_name}/v{type_version}?',
+    'publish': '/v{version}/artifacts/{type_name}/v{type_version}/'
+               '{artifact_id}/publish',
+    'blob': '/v{version}/artifacts/{type_name}/v{type_version}/{artifact_id}'
+            '/{blob_property}',
+}
+
+
 class Controller(object):
-    def __init__(self, http_client, type_name=None, type_version=None):
+    def __init__(self, http_client, type_name=None, type_version=None,
+                 version='0.1'):
         self.http_client = http_client
         self.type_name = type_name
         self.type_version = type_version
+        self.version = version
         self.default_page_size = 20
         self.sort_dir_values = ('asc', 'desc')
 
@@ -70,7 +85,9 @@ class Controller(object):
         type_name, type_version = self._check_type_params(type_name,
                                                           type_version)
         kwargs.update({'name': name, 'version': version})
-        url = '/v0.1/artifacts/%s/v%s/drafts' % (type_name, type_version)
+        url = glare_urls['create'].format(version=self.version,
+                                          type_name=type_name,
+                                          type_version=type_version)
         resp, body = self.http_client.post(url, data=kwargs)
         return ArtifactType(**body)
 
@@ -84,8 +101,10 @@ class Controller(object):
         """
         type_name, type_version = self._check_type_params(type_name,
                                                           type_version)
-        url = '/v0.1/artifacts/%s/v%s/%s' % (type_name, type_version,
-                                             artifact_id)
+        url = glare_urls['update_get_delete'].format(version=self.version,
+                                                     type_name=type_name,
+                                                     type_version=type_version,
+                                                     artifact_id=artifact_id)
         hdrs = {
             'Content-Type': 'application/openstack-images-v2.1-json-patch'}
 
@@ -131,8 +150,10 @@ class Controller(object):
         type_name, type_version = self._check_type_params(type_name,
                                                           type_version)
 
-        url = '/v0.1/artifacts/%s/v%s/%s' % (type_name, type_version,
-                                             artifact_id)
+        url = glare_urls['update_get_delete'].format(version=self.version,
+                                                     type_name=type_name,
+                                                     type_version=type_version,
+                                                     artifact_id=artifact_id)
         if show_level:
             if show_level not in ArtifactType.supported_show_levels:
                 msg = "Invalid show level: %s" % show_level
@@ -194,10 +215,15 @@ class Controller(object):
                 url_params.append({param: value})
 
         if drafts:
-            url = '/v0.1/artifacts/%s/' \
-                  'v%s/drafts?' % (type_name, type_version)
+            url = glare_urls['list_drafts'].format(version=self.version,
+                                                   type_name=type_name,
+                                                   type_version=type_version)
         else:
-            url = '/v0.1/artifacts/%s/v%s?' % (type_name, type_version)
+            url = glare_urls['list_no_drafts'].format(
+                version=self.version,
+                type_name=type_name,
+                type_version=type_version
+            )
 
         for param in url_params:
             url = '%s&%s' % (url, parse.urlencode(param))
@@ -217,8 +243,10 @@ class Controller(object):
         type_name, type_version = self._check_type_params(type_name,
                                                           type_version)
 
-        url = '/v0.1/artifacts/%s/v%s/%s/publish' % (type_name, type_version,
-                                                     artifact_id)
+        url = glare_urls['publish'].format(version=self.version,
+                                           type_name=type_name,
+                                           type_version=type_version,
+                                           artifact_id=artifact_id)
 
         resp, body = self.http_client.post(url)
         return ArtifactType(**body)
@@ -233,8 +261,10 @@ class Controller(object):
         """
         type_name, type_version = self._check_type_params(type_name,
                                                           type_version)
-        url = '/v0.1/artifacts/%s/v%s/%s' % (type_name, type_version,
-                                             artifact_id)
+        url = glare_urls['update_get_delete'].format(version=self.version,
+                                                     type_name=type_name,
+                                                     type_version=type_version,
+                                                     artifact_id=artifact_id)
         self.http_client.delete(url)
 
     def upload_blob(self, artifact_id, blob_property, data, position=None,
@@ -250,8 +280,11 @@ class Controller(object):
                                                           type_version)
         hdrs = {'Content-Type': 'application/octet-stream'}
 
-        url = '/v0.1/artifacts/%s/v%s/%s/%s' % (type_name, type_version,
-                                                artifact_id, blob_property)
+        url = glare_urls['blob'].format(version=self.version,
+                                        type_name=type_name,
+                                        type_version=type_version,
+                                        artifact_id=artifact_id,
+                                        blob_property=blob_property)
         if position:
             url += "/%s" % position
 
@@ -269,8 +302,11 @@ class Controller(object):
         """
         type_name, type_version = self._check_type_params(type_name,
                                                           type_version)
-        url = '/v0.1/artifacts/%s/v%s/%s/%s' % (type_name, type_version,
-                                                artifact_id, blob_property)
+        url = glare_urls['blob'].format(version=self.version,
+                                        type_name=type_name,
+                                        type_version=type_version,
+                                        artifact_id=artifact_id,
+                                        blob_property=blob_property)
         if position:
             url += '/%s' % position
 
@@ -296,8 +332,11 @@ class Controller(object):
         """
         type_name, type_version = self._check_type_params(type_name,
                                                           type_version)
-        url = '/v0.1/artifacts/%s/v%s/%s/%s' % (type_name, type_version,
-                                                artifact_id, blob_property)
+        url = glare_urls['blob'].format(version=self.version,
+                                        type_name=type_name,
+                                        type_version=type_version,
+                                        artifact_id=artifact_id,
+                                        blob_property=blob_property)
         if position:
             url += '/%s' % position
         self.http_client.delete(url)

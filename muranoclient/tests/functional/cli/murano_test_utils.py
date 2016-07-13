@@ -22,8 +22,8 @@ import time
 import uuid
 
 from six.moves import SimpleHTTPServer
-from tempest_lib.cli import output_parser
-from tempest_lib import exceptions
+from tempest.lib.cli import output_parser
+from tempest.lib import exceptions
 
 from muranoclient.tests.functional.cli import utils
 from muranoclient.tests.functional import muranoclient
@@ -33,8 +33,10 @@ class CLIUtilsTestBase(muranoclient.ClientTestBase):
     """Basic methods for Murano CLI client."""
 
     def delete_murano_object(self, murano_object, obj_to_del):
-        """Delete Murano object like environment, category
-        or environment-template.
+        """Delete Murano object
+
+        Delete Murano object like environment, category or
+        environment-template.
         """
         if obj_to_del not in self.listing('{0}-list'.format(murano_object)):
             return
@@ -48,8 +50,10 @@ class CLIUtilsTestBase(muranoclient.ClientTestBase):
         return object_list
 
     def create_murano_object(self, murano_object, prefix_object_name):
-        """Create Murano object like environment, category
-        or environment-template.
+        """Create Murano object
+
+        Create Murano object like environment, category or
+        environment-template.
         """
         object_name = self.generate_name(prefix_object_name)
         mrn_objects = self.listing('{0}-create'.format(murano_object),
@@ -67,8 +71,10 @@ class CLIUtilsTestBase(muranoclient.ClientTestBase):
 
     def create_murano_object_parameter(self, murano_object, prefix_object_name,
                                        param):
-        """Create Murano object like environment, category
-        or environment-template.
+        """Create Murano object
+
+        Create Murano object like environment, category or
+        environment-template.
         """
         object_name = self.generate_name(prefix_object_name)
         params = '{0} {1}'.format(param, object_name)
@@ -208,6 +214,28 @@ class CLIUtilsTestPackagesBase(TestSuiteRepository):
             time.sleep(2)
 
         return True
+
+    def prepare_bundle_with_non_existed_package(self):
+        temp_file = tempfile.NamedTemporaryFile(mode='w',
+                                                delete=False)
+        self.addCleanup(os.remove, temp_file.name)
+
+        with open(temp_file.name, 'w') as tf:
+            tf.write(json.dumps({'Packages': [
+                {'Name': 'first_app'},
+                {'Name': 'second_app', 'Version': '1.0'}
+            ]}))
+
+        return temp_file.name
+
+    def prepare_bundle_with_invalid_format(self):
+        temp_file = tempfile.NamedTemporaryFile(mode='w', delete=False)
+        self.addCleanup(os.remove, temp_file.name)
+
+        with open(temp_file.name, 'w') as tf:
+            tf.write('Packages: [{Name: first_app}, {Name: second_app}]')
+
+        return temp_file.name
 
     def deploy_environment(self, env_id, obj_model):
         session = self.listing('environment-session-create',

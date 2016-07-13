@@ -14,10 +14,9 @@
 # limitations under the License.
 
 
+# Not a true manager yet; should be changed to be one if CRUD
+# functionality becomes available for actions.
 class ActionManager(object):
-    """Not a true manager yet; should be changed to be one if CRUD
-    functionality becomes available for actions.
-    """
     def __init__(self, api):
         self.api = api
 
@@ -26,11 +25,11 @@ class ActionManager(object):
             arguments = {}
         url = '/v1/environments/{environment_id}/actions/{action_id}'.format(
             environment_id=environment_id, action_id=action_id)
-        resp, body = self.api.json_request('POST', url, body=arguments)
+        resp, body = self.api.json_request(url, 'POST', body=arguments)
         return body['task_id']
 
     def get_result(self, environment_id, task_id):
         url = '/v1/environments/{environment_id}/actions/{task_id}'.format(
             environment_id=environment_id, task_id=task_id)
-        resp, body = self.api.json_request('GET', url)
+        resp, body = self.api.json_request(url, 'GET')
         return body or None

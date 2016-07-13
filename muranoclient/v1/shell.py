@@ -12,6 +12,7 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import collections
 import functools
 import json
 import os
@@ -296,7 +297,7 @@ def do_env_template_create(mc, args):
 
 @utils.arg("id", metavar="<ID>",
            help="Environment template ID.")
-@utils.arg("name", metavar="<ENV_TEMPLATE_NAME>",
+@utils.arg("name", metavar="<ENV_NAME>",
            help="New environment name.")
 def do_env_template_create_env(mc, args):
     """Create a new environment from template."""
@@ -341,8 +342,11 @@ def do_env_template_show(mc, args):
 def do_env_template_add_app(mc, args):
     """Add application to the environment template."""
     with open(args.app_template_file, "r") as app_file:
-        app_template = json.load(app_file)
-    mc.env_templates.create_app(args.id, app_template)
+        app_templates = json.load(app_file)
+    if not isinstance(app_templates, list):
+        app_templates = [app_templates]
+    for app_template in app_templates:
+        mc.env_templates.create_app(args.id, app_template)
     do_env_template_show(mc, args)
 
 
@@ -481,9 +485,9 @@ def do_package_list(mc, args=None):
 
 def _print_package_list(packages):
     field_labels = ["ID", "Name", "FQN", "Author", "Active",
-                    "Is Public", "Type"]
+                    "Is Public", "Type", "Version"]
     fields = ["id", "name", "fully_qualified_name", "author",
-              "enabled", "is_public", "type"]
+              "enabled", "is_public", "type", "version"]
     utils.print_list(packages, fields, field_labels, sortby=0)
 
 
@@ -623,9 +627,14 @@ def _handle_package_exists(mc, data, package, exists_action):
            help='Version of the package to use from repository '
                 '(ignored when importing with multiple packages).')
 @utils.arg('--exists-action', default='', choices=['a', 's', 'u'],
-           help='Default action when a package already exists.')
+           help='Default action when a package already exists: '
+                '(s)kip, (u)pdate, (a)bort.')
+@utils.arg('--dep-exists-action', default='', choices=['a', 's', 'u'],
+           help='Default action when a dependency package already exists: '
+                '(s)kip, (u)pdate, (a)bort.')
 def do_package_import(mc, args):
     """Import a package.
+
     `FILE` can be either a path to a zip file, url or a FQPN.
     You can use `--` to separate `FILE`s from other arguments.
 
@@ -643,7 +652,8 @@ def do_package_import(mc, args):
     if args.categories:
         data["categories"] = args.categories
 
-    total_reqs = {}
+    total_reqs = collections.OrderedDict()
+    main_packages_names = []
     for filename in args.filename:
         if os.path.isfile(filename):
             _file = filename
@@ -664,8 +674,13 @@ def do_package_import(mc, args):
                 filename, e))
             continue
         total_reqs.update(package.requirements(base_url=args.murano_repo_url))
+        main_packages_names.append(package.manifest['FullName'])
 
     imported_list = []
+
+    dep_exists_action = args.dep_exists_action
+    if dep_exists_action == '':
+        dep_exists_action = args.exists_action
 
     for name, package in six.iteritems(total_reqs):
         image_specs = package.images()
@@ -683,9 +698,13 @@ def do_package_import(mc, args):
             except Exception as e:
                 print("Error {0} occurred while installing "
                       "images for {1}".format(e, name))
+        if name in main_packages_names:
+            exists_action = args.exists_action
+        else:
+            exists_action = dep_exists_action
         try:
             imported_package = _handle_package_exists(
-                mc, data, package, args.exists_action)
+                mc, data, package, exists_action)
             if imported_package:
                 imported_list.append(imported_package)
         except Exception as e:
@@ -731,12 +750,13 @@ def do_package_update(mc, args):
            help='Default action when a package already exists.')
 def do_bundle_import(mc, args):
     """Import a bundle.
+
     `FILE` can be either a path to a zip file, URL, or name from repo.
     If `FILE` is a local file, treat names of packages in a bundle as
     file names, relative to location of the bundle file. Requirements
     are first searched in the same directory.
     """
-    total_reqs = {}
+    total_reqs = collections.OrderedDict()
     for filename in args.filename:
         local_path = None
         if os.path.isfile(filename):
@@ -841,6 +861,7 @@ def _handle_save_packages(packages, dst, base_url, no_images):
            help='If set will skip images downloading.')
 def do_bundle_save(mc, args):
     """Save a bundle.
+
     This will download a bundle of packages with all dependencies
     to specified path. If path doesn't exist it will be created.
     """
@@ -855,7 +876,7 @@ def do_bundle_save(mc, args):
     else:
         dst = os.getcwd()
 
-    total_reqs = {}
+    total_reqs = collections.OrderedDict()
 
     if os.path.isfile(bundle):
         _file = bundle
@@ -902,6 +923,7 @@ def do_bundle_save(mc, args):
            help='If set will skip images downloading.')
 def do_package_save(mc, args):
     """Save a package.
+
     This will download package(s) with all dependencies
     to specified path. If path doesn't exist it will be created.
     """
@@ -920,7 +942,7 @@ def do_package_save(mc, args):
               "ignoring version.")
         version = ''
 
-    total_reqs = {}
+    total_reqs = collections.OrderedDict()
     for package in args.package:
         _file = utils.to_url(
             package,
@@ -949,8 +971,7 @@ def do_package_save(mc, args):
                 'Leave empty to browse all applications in the environment.',
            default='/')
 def do_app_show(mc, args):
-    """List applications, added to specified environment.
-    """
+    """List applications, added to specified environment."""
     if args.path == '/':
         apps = mc.services.list(args.id)
         formatters = {'id': lambda x: getattr(x, '?')['id'],
@@ -1057,9 +1078,10 @@ def _print_category_list(categories):
 def do_category_show(mc, args):
     """Display category details."""
     category = mc.categories.get(args.id)
+    packages = mc.packages.filter(category=category.name)
     to_display = dict(id=category.id,
                       name=category.name,
-                      packages=', '.join(p['name'] for p in category.packages))
+                      packages=', '.join(p.name for p in packages))
     formatters = {'packages': utils.text_wrap_formatter}
     utils.print_dict(to_display, formatters)
 
