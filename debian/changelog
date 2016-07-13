@@ -1,3 +1,9 @@
+python-muranoclient (0.9.0-1) experimental; urgency=medium
+
+  * New upstream release.
+
+ -- Thomas Goirand <zigo@debian.org>  Wed, 13 Jul 2016 09:57:54 +0200
+
 python-muranoclient (0.8.4-2) experimental; urgency=medium
 
   * CVE-2016-4972: RCE vulnerability in Openstack Murano using insecure YAML
