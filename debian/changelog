@@ -3,6 +3,8 @@ python-muranoclient (0.9.0-1) experimental; urgency=medium
   * New upstream release.
   * Fixed (build-)depends for this release.
   * Using pgkos-dh_auto_{test,install} from openstack-pkg-tools >= 52~.
+  * Removed CVE-2016-4972_Use_yaml.SafeLoader_instead_of_yaml.Loader.patch
+    applied upstream.
 
  -- Thomas Goirand <zigo@debian.org>  Wed, 13 Jul 2016 09:57:54 +0200
 
