@@ -1,0 +1,12 @@
+Verified+1: Murano CI
+Code-Review+2: Kirill Zaitsev <kzaitsev@mirantis.com>
+Code-Review+1: Valerii Kovalchuk <vakovalchuk@mirantis.com>
+Code-Review+1: Omar Shykhkerimov <oshykhkerimov@mirantis.com>
+Code-Review+2: Nikolay Starodubtsev <starodubcevna@gmail.com>
+Workflow+1: Nikolay Starodubtsev <starodubcevna@gmail.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Tue, 19 Jul 2016 09:49:18 +0000
+Reviewed-on: https://review.openstack.org/334172
+Project: openstack/deb-python-muranoclient
+Branch: refs/heads/master
