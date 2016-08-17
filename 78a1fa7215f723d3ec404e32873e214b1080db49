@@ -1,0 +1,10 @@
+Code-Review+2: Stan Lagun <slagun@mirantis.com>
+Code-Review+2: Ekaterina Chernova <efedorova@mirantis.com>
+Workflow+1: Ekaterina Chernova <efedorova@mirantis.com>
+Verified+1: Murano CI
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Fri, 24 Apr 2015 13:12:36 +0000
+Reviewed-on: https://review.openstack.org/177197
+Project: openstack/deb-python-muranoclient
+Branch: refs/heads/stable/kilo
