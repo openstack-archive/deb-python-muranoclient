@@ -1,4 +1,5 @@
 [gerrit]
 host=review.openstack.org
 port=29418
-project=openstack/python-muranoclient.git
+project=openstack/deb-python-muranoclient.git
+defaultbranch=debian/newton
