@@ -1,0 +1,10 @@
+Code-Review+2: Kirill Zaitsev <kzaitsev@mirantis.com>
+Verified+1: Murano CI
+Code-Review+2: Serg Melikyan <smelikyan@mirantis.com>
+Workflow+1: Serg Melikyan <smelikyan@mirantis.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Mon, 11 Jul 2016 16:14:47 +0000
+Reviewed-on: https://review.openstack.org/339533
+Project: openstack/deb-python-muranoclient
+Branch: refs/heads/stable/mitaka
