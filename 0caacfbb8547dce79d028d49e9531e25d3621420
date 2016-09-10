@@ -1,0 +1,9 @@
+Code-Review+2: Timur Sufiev <tsufiev@mirantis.com>
+Code-Review+2: Dmitry Teselkin <dteselkin@mirantis.com>
+Workflow+1: Dmitry Teselkin <dteselkin@mirantis.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Tue, 29 Apr 2014 13:07:15 +0000
+Reviewed-on: https://review.openstack.org/90953
+Project: openstack/deb-python-muranoclient
+Branch: refs/heads/release-0.5
