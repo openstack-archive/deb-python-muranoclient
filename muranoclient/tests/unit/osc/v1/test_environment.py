@@ -10,6 +10,10 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import collections
+import json
+import tempfile
+
 import mock
 
 from muranoclient.osc.v1 import environment as osc_env
@@ -34,6 +38,8 @@ class TestEnvironment(fakes.TestApplicationCatalog):
             environments
         self.session_mock = self.app.client_manager.application_catalog.\
             sessions
+        self.services_mock = self.app.client_manager.application_catalog.\
+            services
         self.environment_mock.reset_mock()
 
 
@@ -46,7 +52,7 @@ class TestListEnvironment(TestEnvironment):
         # Command to test
         self.cmd = osc_env.ListEnvironments(self.app, None)
 
-    @mock.patch('openstackclient.common.utils.get_item_properties')
+    @mock.patch('osc_lib.utils.get_item_properties')
     def test_environment_list_with_no_options(self, mock_util):
         arglist = []
         verifylist = []
@@ -70,7 +76,7 @@ class TestListEnvironment(TestEnvironment):
                           '2015-12-16T17:31:54')]
         self.assertEqual(expected_data, data)
 
-    @mock.patch('openstackclient.common.utils.get_item_properties')
+    @mock.patch('osc_lib.utils.get_item_properties')
     def test_environment_list_with_options(self, mock_util):
         arglist = ['--all-tenants']
         verifylist = [('all_tenants', True)]
@@ -176,7 +182,7 @@ class TestRenameEnvironment(TestEnvironment):
         # Command to test
         self.cmd = osc_env.RenameEnvironment(self.app, None)
 
-    @mock.patch('openstackclient.common.utils.get_item_properties')
+    @mock.patch('osc_lib.utils.get_item_properties')
     def test_environment_rename(self, mock_util):
         arglist = ['1234', 'fake-1']
         verifylist = [('id', '1234'), ('name', 'fake-1')]
@@ -235,7 +241,7 @@ class TestEnvironmentCreate(TestEnvironment):
         # Command to test
         self.cmd = osc_env.EnvironmentCreate(self.app, None)
 
-    @mock.patch('openstackclient.common.utils.get_item_properties')
+    @mock.patch('osc_lib.utils.get_item_properties')
     def test_environment_create_with_no_option(self, mock_util):
         arglist = ['fake']
         verifylist = [('name', 'fake')]
@@ -256,7 +262,7 @@ class TestEnvironmentCreate(TestEnvironment):
                           '2015-12-16T17:31:54', '2015-12-16T17:31:54')]
         self.assertEqual(expected_data, data)
 
-    @mock.patch('openstackclient.common.utils.get_item_properties')
+    @mock.patch('osc_lib.utils.get_item_properties')
     def test_environment_create_with_region_option(self, mock_util):
         arglist = ['fake', '--region', 'region_one']
         verifylist = [('name', 'fake'), ('region', 'region_one')]
@@ -281,7 +287,7 @@ class TestEnvironmentCreate(TestEnvironment):
                           '2015-12-16T17:31:54', '2015-12-16T17:31:54')]
         self.assertEqual(expected_data, data)
 
-    @mock.patch('openstackclient.common.utils.get_item_properties')
+    @mock.patch('osc_lib.utils.get_item_properties')
     def test_environment_create_with_net_option(self, mock_util):
         arglist = ['fake', '--join-net-id', 'x1y2z3']
         verifylist = [('name', 'fake'), ('join_net_id', 'x1y2z3')]
@@ -320,7 +326,7 @@ class TestEnvironmentCreate(TestEnvironment):
                           '2015-12-16T17:31:54', '2015-12-16T17:31:54')]
         self.assertEqual(expected_data, data)
 
-    @mock.patch('openstackclient.common.utils.get_item_properties')
+    @mock.patch('osc_lib.utils.get_item_properties')
     def test_environment_create_with_subnet_option(self, mock_util):
         arglist = ['fake', '--join-subnet-id', 'x1y2z3']
         verifylist = [('name', 'fake'), ('join_subnet_id', 'x1y2z3')]
@@ -370,7 +376,7 @@ class TestEnvironmentDelete(TestEnvironment):
         # Command to test
         self.cmd = osc_env.EnvironmentDelete(self.app, None)
 
-    @mock.patch('openstackclient.common.utils.get_item_properties')
+    @mock.patch('osc_lib.utils.get_item_properties')
     def test_environment_delete(self, mock_util):
         arglist = ['fake1', 'fake2']
         verifylist = [('id', ['fake1', 'fake2'])]
@@ -425,3 +431,40 @@ class TestEnvironmentDeploy(TestEnvironment):
                          {}, ['fake services'], 'fake deployed', 'xyz123',
                          '2015-12-16T17:31:54', '1')
         self.assertEqual(expected_data, data)
+
+
+class TestEnvironmentAppsEdit(TestEnvironment):
+    def setUp(self):
+        super(TestEnvironmentAppsEdit, self).setUp()
+
+        # Command to test
+        self.cmd = osc_env.EnvironmentAppsEdit(self.app, None)
+
+    def test_environment_deploy(self):
+        fake = collections.namedtuple('fakeEnv', 'services')
+        self.environment_mock.get.side_effect = [
+            fake(services=[
+                {'?': {'name': "foo"}}
+            ]),
+        ]
+
+        temp_file = tempfile.NamedTemporaryFile(prefix="murano-test", mode='w')
+        json.dump([
+            {'op': 'replace', 'path': '/0/?/name',
+                'value': "dummy"
+             }
+        ], temp_file)
+        temp_file.file.flush()
+
+        arglist = ['fake', '--session-id', 'abc123', temp_file.name]
+
+        parsed_args = self.check_parser(self.cmd, arglist, [])
+
+        self.cmd.take_action(parsed_args)
+
+        self.services_mock.put.assert_called_once_with(
+            'fake',
+            session_id='abc123',
+            path='/',
+            data=[{'?': {'name': 'dummy'}}]
+        )
