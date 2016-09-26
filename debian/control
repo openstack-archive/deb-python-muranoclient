@@ -63,8 +63,8 @@ Build-Depends-Indep: python-babel (>= 2.3.4),
                      tempest (>= 1:12.1.0),
                      testrepository,
 Standards-Version: 3.9.8
-Vcs-Browser: https://git.openstack.org/cgit/openstack/deb-python-muranoclient
-Vcs-Git: https://git.openstack.org/openstack/deb-python-muranoclient
+Vcs-Browser: https://git.openstack.org/cgit/openstack/deb-python-muranoclient?h=debian%2Fnewton
+Vcs-Git: https://git.openstack.org/openstack/deb-python-muranoclient -b debian/newton
 Homepage: https://github.com/openstack/python-muranoclient
 
 Package: python-muranoclient
