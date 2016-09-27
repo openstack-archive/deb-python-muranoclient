@@ -1,0 +1,10 @@
+Code-Review+2: Kirill Zaitsev <kzaitsev@mirantis.com>
+Code-Review+2: zhurong <zhu.rong@99cloud.net>
+Workflow+1: zhurong <zhu.rong@99cloud.net>
+Verified+1: Murano CI
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Mon, 26 Sep 2016 15:57:30 +0000
+Reviewed-on: https://review.openstack.org/375965
+Project: openstack/deb-python-muranoclient
+Branch: refs/heads/master
