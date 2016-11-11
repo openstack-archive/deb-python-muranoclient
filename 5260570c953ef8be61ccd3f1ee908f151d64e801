@@ -1,0 +1,11 @@
+Verified+1: Murano CI
+Code-Review+1: Artem Tiumentcev <AITyumentsev.SBT@sberbank.ru>
+Code-Review+2: Kirill Zaitsev <k.zaitsev@me.com>
+Code-Review+2: Serg Melikyan <smelikyan@mirantis.com>
+Workflow+1: Serg Melikyan <smelikyan@mirantis.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Fri, 11 Nov 2016 15:52:32 +0000
+Reviewed-on: https://review.openstack.org/396346
+Project: openstack/deb-python-muranoclient
+Branch: refs/heads/master
