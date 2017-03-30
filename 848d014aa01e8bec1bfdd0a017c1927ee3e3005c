@@ -1,0 +1,10 @@
+Code-Review+2: zhurong <aaronzhu1121@gmail.com>
+Verified+1: Murano CI
+Code-Review+2: Felipe Monteiro <felipe.monteiro@att.com>
+Workflow+1: Felipe Monteiro <felipe.monteiro@att.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Thu, 30 Mar 2017 04:38:08 +0000
+Reviewed-on: https://review.openstack.org/451059
+Project: openstack/deb-python-muranoclient
+Branch: refs/heads/master
