@@ -1,0 +1,11 @@
+Verified+1: Murano CI
+Code-Review+2: Kirill Zaitsev <k.zaitsev@me.com>
+Workflow+1: Felipe Monteiro <felipe.monteiro@att.com>
+Code-Review+2: zhurong <aaronzhu1121@gmail.com>
+Workflow+1: zhurong <aaronzhu1121@gmail.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Tue, 04 Jul 2017 02:02:31 +0000
+Reviewed-on: https://review.openstack.org/478616
+Project: openstack/deb-python-muranoclient
+Branch: refs/heads/master
